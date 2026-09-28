@@ -1,0 +1,42 @@
+# ---------------------------------------------------------------- 密钥
+# 只提交 .env.example；真实 .env 里有 LLM/Qdrant 的 key，绝不能进仓库
+.env
+.env.local
+.env.*.local
+
+# ---------------------------------------------------------------- Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ---------------------------------------------------------------- 前端
+node_modules/
+dist/
+dist-ssr/
+*.tsbuildinfo
+*.local
+
+# 由 tmp-reducer-check.ts 构建出来的产物，源码才是要提交的那个
+tmp-reducer-check.mjs
+
+# ---------------------------------------------------------------- 数据库
+# 本地/测试用的 SQLite 文件，跑测试会自动重建
+*.db
+*.db-wal
+*.db-shm
+
+# ---------------------------------------------------------------- 检索索引
+# data/index/ 全部由 `python -m scripts.ingest` 从 data/knowledge/*.md 生成，
+# 属于派生数据。提交它只会让知识库改动产生无意义的二进制 diff。
+backend/data/index/
+
+# ---------------------------------------------------------------- 崩溃转储与系统垃圾
+# Git Bash 在这台机器上崩过几次，会掉下这些文件
+*.stackdump
+.DS_Store
+Thumbs.db
+desktop.ini
