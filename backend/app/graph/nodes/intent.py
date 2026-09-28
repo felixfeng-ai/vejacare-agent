@@ -107,6 +107,10 @@ async def intent_classifier(state: AgentState) -> dict:
         "escalation_reason": "",
         "escalation_id": "",
         "human_reply": None,
+        # 评分邀请同理：feedback 节点只会置 True，没有谁负责置回 False，
+        # 而它跟着 checkpoint 跨轮存活。不清的话某一轮弹过评分卡之后，
+        # 之后每一轮都会再弹一次（chat.py 每轮都读这个字段）。
+        "request_feedback": False,
     }
 
 

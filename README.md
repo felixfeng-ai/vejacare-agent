@@ -294,10 +294,10 @@ cs-agent/
 ## 测试
 
 ```bash
-.venv/Scripts/python -m pytest        # 51 passed（在仓库根或 backend/ 下跑都一样）
+.venv/Scripts/python -m pytest        # 52 passed（在仓库根或 backend/ 下跑都一样）
 ```
 
-> `pytest.ini` 特意放在**仓库根**而不是 `backend/` 下。配置若只存在于 `backend/`，从仓库根直接敲 `pytest` 就找不到它，`asyncio_mode` 与 loop scope 两项设置随之失效 —— session 级异步 fixture 与测试落到不同事件循环上，图与 checkpointer 的 aiosqlite 连接跨 loop 复用，转人工 resume 失效。表现是 51 条里 23 条报错，而代码一行没坏，排查时只能看到 `GraphInterrupt` 和「收尾回复为空」这类业务断言。
+> `pytest.ini` 特意放在**仓库根**而不是 `backend/` 下。配置若只存在于 `backend/`，从仓库根直接敲 `pytest` 就找不到它，`asyncio_mode` 与 loop scope 两项设置随之失效 —— session 级异步 fixture 与测试落到不同事件循环上，图与 checkpointer 的 aiosqlite 连接跨 loop 复用，转人工 resume 失效。表现是 52 条里 23 条报错，而代码一行没坏，排查时只能看到 `GraphInterrupt` 和「收尾回复为空」这类业务断言。
 
 分四层：`test_graph.py` 直接驱动图，`test_rerank.py` 打检索层，`test_config.py` 打配置解析，其余三个文件走 HTTP 打真实接口。
 
@@ -396,7 +396,7 @@ push main → GitHub Actions → SSH → /opt/veyacare/deploy/cicd-deploy.sh
 - 满意度闭环（`POST /api/feedback` → 看板可见）与转人工、会话管理三条接口链路均有接口级测试
 - 100 条评测集 + 可回归的评测脚本，检索 Hit@5 100% / 要点覆盖 98%
 - Dockerfile（后端 + 前端多阶段）、docker-compose、GitHub Actions（测试 + 评测门禁 + 镜像冒烟）
-- 后端 51/51 测试通过，前端契约校验 36 条断言通过
+- 后端 52/52 测试通过，前端契约校验 36 条断言通过
 - **已部署上线**：香港服务器原生部署（PM2 + nginx），push 到 main 自动发布，见「部署」一节
 
 **未完成**

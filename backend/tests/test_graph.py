@@ -221,3 +221,24 @@ async def test_multi_turn_context_is_retained(graph, thread_config):
     assert second["turn_count"] == 2
     assert len(second["messages"]) >= 4
     assert _last_ai_text(second).strip()
+
+
+async def test_feedback_request_does_not_leak_into_next_turn(graph, thread_config):
+    """评分邀请只在该弹的那一轮弹一次，不能跨轮残留。
+
+    `request_feedback` 是存在 checkpoint 里的跨轮状态，而写入方（feedback 节点）
+    只会把它置 True，没有任何地方负责置回 False。于是只要某一轮弹过评分卡，
+    之后每一轮的 chat.py 都会再发一次 feedback_request —— 前端表现为评分卡反复出现。
+
+    判据选转人工分支：它从意图识别直接进 escalation，整轮不经过评估器与
+    feedback 节点，因此本轮本来就不该邀请评分。若不在每轮开头清理，这个字段
+    会带着上一轮的 True 走到这里。
+    """
+    config = thread_config(f"t-{uuid.uuid4().hex[:8]}")
+
+    first = await _run(graph, config, "我的包裹到哪了？订单号 SO20260928001")
+    assert first["request_feedback"] is True, "这一轮正常结束，应当邀请评分"
+
+    second = await _run(graph, config, "我要转人工，找你们真人客服")
+    assert second["intent"] == "human_agent", "这一轮应当走转人工分支"
+    assert second["request_feedback"] is False, "上一轮的评分邀请不该跨轮残留"
