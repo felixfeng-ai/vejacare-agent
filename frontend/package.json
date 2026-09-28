@@ -8,7 +8,8 @@
     "dev": "vite",
     "build": "tsc -p tsconfig.json && tsc -p tsconfig.node.json && vite build",
     "preview": "vite preview",
-    "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.node.json"
+    "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.node.json",
+    "check:reducer": "esbuild checks/reducer.contract.ts --bundle --format=esm --platform=node --outfile=.check/reducer.mjs --log-level=warning && node .check/reducer.mjs"
   },
   "dependencies": {
     "react": "^18.3.1",

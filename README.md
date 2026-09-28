@@ -330,9 +330,19 @@ cs-agent/
 
 ```bash
 cd frontend
-npx esbuild tmp-reducer-check.ts --bundle --format=esm --platform=node --outfile=tmp-reducer-check.mjs
-node tmp-reducer-check.mjs            # 36 条断言
+npm run check:reducer                 # 36 条断言
 ```
+
+它校验的是 `chatReducer` 这个纯函数的状态机行为（转人工、静默轮询不冲流式回合、错误重试、满意度状态机等 8 个场景），**不渲染组件**，所以覆盖不到「组件读了接口的 `null` 字段而崩」这类问题。
+
+那类问题由接口契约校验兜 —— 起真实服务，用真实 HTTP 把前端会读的每个字段打一遍：
+
+```bash
+cd backend
+.venv/Scripts/python scripts/verify_contract.py http://127.0.0.1:8000   # 默认打线上
+```
+
+它比对的是「接口实际返回的类型」与「前端声明的类型」。这一步非有不可，因为 [frontend/src/api/types.ts](frontend/src/api/types.ts) 里的类型是**手写断言、不是从接口推导的**：满意度看板的 `avg_rating` 在无人评分时返回 `null`，而类型写的是 `number`，`tsc` 一路绿灯，直到用户点开看板才 `TypeError: Cannot read properties of null`。允许为空的字段必须登记在脚本的 `NULLABLE_FIELDS` 白名单里并注明前端在哪处理的，否则同样报错。两个 job 都会在 CI 里跑。
 
 ---
 
@@ -400,7 +410,7 @@ push main → GitHub Actions → SSH → /opt/veyacare/deploy/cicd-deploy.sh
 - 满意度闭环（`POST /api/feedback` → 看板可见）与转人工、会话管理三条接口链路均有接口级测试
 - 100 条评测集 + 可回归的评测脚本，检索 Hit@5 100% / 要点覆盖 98%
 - Dockerfile（后端 + 前端多阶段）、docker-compose、GitHub Actions（测试 + 评测门禁 + 镜像冒烟）
-- 后端 52/52 测试通过，前端契约校验 36 条断言通过
+- 后端 52/52 测试通过；前端 reducer 契约 36 条断言通过；接口契约校验 383 项通过
 - **已部署上线**：香港服务器原生部署（PM2 + nginx），push 到 main 自动发布，见「部署」一节
 
 **未完成**

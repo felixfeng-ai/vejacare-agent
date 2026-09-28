@@ -1,8 +1,16 @@
-// 临时校验：把 docs/API.md §1.1 的 SSE 示例原样喂给 reducer，检查状态机行为。
-// 跑法：npx esbuild tmp-reducer-check.ts --bundle --format=esm --platform=node --outfile=tmp-reducer-check.mjs && node tmp-reducer-check.mjs
-import { chatReducer, initialState, toChatMessage } from './src/hooks/chatReducer.ts';
-import type { ChatState, ChatAction } from './src/hooks/chatReducer.ts';
-import type { Message } from './src/api/types.ts';
+// 契约校验：把 docs/API.md §1.1 的 SSE 示例原样喂给 reducer，检查状态机行为。
+//
+// 跑法：npm run check:reducer   （等价于 esbuild 打包到 .check/ 再 node 执行）
+//
+// 为什么单独放一个目录而不是 src/ 下：它不参与前端打包，只被 CI 与本地调用；
+// 放在 src/ 里会被 tsc 的 include 扫进去，也会让人误以为它是运行时代码。
+//
+// 注意它校验的是 reducer 这个纯函数，不渲染组件 —— 所以覆盖不到
+// 「组件读了接口的 null 字段而崩」这类问题（看板 avg_rating 那次就是）。
+// 那类问题由 backend/scripts/verify_contract.py 打真实接口来兜。
+import { chatReducer, initialState, toChatMessage } from '../src/hooks/chatReducer.ts';
+import type { ChatState, ChatAction } from '../src/hooks/chatReducer.ts';
+import type { Message } from '../src/api/types.ts';
 
 let failed = 0;
 function ok(name: string, condition: boolean, extra?: unknown): void {
