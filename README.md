@@ -382,7 +382,11 @@ push main → GitHub Actions → SSH → /opt/veyacare/deploy/cicd-deploy.sh
 
 **`docker-compose.yml` 仍然保留**，用于本地一条命令起完整环境；服务器上没用它，是因为 **Docker 会改 iptables 且要常驻约 200M 内存，而这台机器上还跑着另外两个线上站点**。
 
-首次部署需要在仓库配两个 Secret：`VEYACARE_HOST`（服务器 IP）与 `VEYACARE_SSH_KEY`（部署私钥全文）。域名首次解析后跑一次 `sudo certbot --nginx -d cs.veyawork.work` 即可拿到 HTTPS。
+首次部署需要在仓库配两个 Secret：`VEYACARE_HOST`（服务器 IP）与 `VEYACARE_SSH_KEY`（部署私钥全文）。
+
+**HTTPS 已于 2026-09-28 签好上线**（`https://cs.veyawork.work`，Let's Encrypt，certbot 的 systemd timer 自动续期）。
+
+这里有个容易踩的坑，值得单独记一笔：`deploy/nginx-cs.veyawork.work.conf` 是**服务器现状的准源头**，不是只含 80 端口的手写草稿。部署脚本第 7 步拿它与服务器上那份 `diff`，不一致就覆盖 + reload —— 当初跑 `certbot --nginx` 时 certbot 就地改写了服务器上的配置（拆出 80→443 的 301 段、给主 server 块补上 443 ssl 与证书路径），**如果仓库这份没跟着同步回来，下一次 push 就会把整个 HTTPS 段冲掉，站点静默退回纯 HTTP**。所以签完证书后把它逐字节拷了回来（md5 一致），只在注释头补了说明。以后若再动 certbot，记得同样同步一次。
 
 ## 当前进度
 

@@ -141,5 +141,6 @@ curl -s -o /dev/null -w "  接口 /api/health → %{http_code}\n" --max-time 10 
     -H "Host: $DOMAIN" "http://127.0.0.1/api/health"
 
 echo "✅ 部署完成"
-echo "   域名生效前置条件：$DOMAIN 的 A 记录指向本机，然后跑一次"
-echo "   sudo certbot --nginx -d $DOMAIN"
+# HTTPS 已于 2026-09-28 签好并随 nginx 配置一起纳入版本管理，
+# 证书由 certbot 的 systemd timer 自动续期，这里不需要再做任何事。
+echo "   HTTPS: https://$DOMAIN （证书自动续期，无需人工干预）"
