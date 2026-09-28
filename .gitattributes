@@ -1,0 +1,19 @@
+# 统一换行符为 LF，仓库里和检出后都是。
+#
+# 为什么必须显式声明：开发机是 Windows（core.autocrlf=true），
+# 而部署目标是 Linux。如果 shell 脚本以 CRLF 存进仓库，服务器上
+# `bash deploy/cicd-deploy.sh` 会因为每行末尾多一个 \r 而直接失败
+# （报 bad interpreter 或 $'\r': command not found），且极难一眼看出。
+# Python 恰好容忍 CRLF，所以这个问题只在 shell 脚本上暴露——
+# 与其逐个文件去防，不如全局钉死。
+* text=auto eol=lf
+
+# 二进制文件不参与换行符转换
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.woff binary
+*.woff2 binary
+*.db binary
