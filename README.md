@@ -294,14 +294,14 @@ cs-agent/
 ## 测试
 
 ```bash
-.venv/Scripts/python -m pytest        # 52 passed（在仓库根或 backend/ 下跑都一样）
+.venv/Scripts/python -m pytest        # 62 passed（在仓库根或 backend/ 下跑都一样）
 ```
 
-> `pytest.ini` 特意放在**仓库根**而不是 `backend/` 下。配置若只存在于 `backend/`，从仓库根直接敲 `pytest` 就找不到它，`asyncio_mode` 与 loop scope 两项设置随之失效 —— session 级异步 fixture 与测试落到不同事件循环上，图与 checkpointer 的 aiosqlite 连接跨 loop 复用，转人工 resume 失效。表现是 52 条里 23 条报错，而代码一行没坏，排查时只能看到 `GraphInterrupt` 和「收尾回复为空」这类业务断言。
+> `pytest.ini` 特意放在**仓库根**而不是 `backend/` 下。配置若只存在于 `backend/`，从仓库根直接敲 `pytest` 就找不到它，`asyncio_mode` 与 loop scope 两项设置随之失效 —— session 级异步 fixture 与测试落到不同事件循环上，图与 checkpointer 的 aiosqlite 连接跨 loop 复用，转人工 resume 失效。表现是当时 52 条里 23 条报错，而代码一行没坏，排查时只能看到 `GraphInterrupt` 和「收尾回复为空」这类业务断言。
 
-分四层：`test_graph.py` 直接驱动图，`test_rerank.py` 打检索层，`test_config.py` 打配置解析，其余三个文件走 HTTP 打真实接口。
+分五层：`test_graph.py` 直接驱动图，`test_llm_mock.py` 打桩自己的规则表，`test_rerank.py` 打检索层，`test_config.py` 打配置解析，其余三个文件走 HTTP 打真实接口。
 
-**图流程（`test_graph.py`，10 条）** —— 改任何节点、任何 prompt、任何检索参数，只要主链路跑挂了这里就会红：
+**图流程（`test_graph.py`，12 条）** —— 改任何节点、任何 prompt、任何检索参数，只要主链路跑挂了这里就会红：
 
 - 完整链路（意图 → RAG → 工具 → 回复），并断言回复里引用的是**真实轨迹**而非编造
 - 闲聊短路（不检索、不调工具）
@@ -310,7 +310,14 @@ cs-agent/
 - 退货运费来自工具计算，不是模型臆测
 - **失效文档永远检索不到**
 - 转人工：挂起 / 工单幂等（interrupt 重跑不建两张单）/ 人工回复后 resume 收尾
-- 多轮上下文保留
+- 多轮上下文保留；评分邀请不跨轮残留
+- 纯政策问题不借用上一轮的订单号 —— 拿真数据答错题比查不到更糟
+
+**桩的规则表（`test_llm_mock.py`，9 条）** —— 离线模式下 CI 跑的就是桩，桩的规则表跑偏等于整张回归网跟着偏，所以它本身也要被测试盯住：
+
+- 槽位只在「本轮明确回指上一轮」或「本轮毫无线索」时才沿用上文；纯政策问题不许继承上一轮的订单号
+- 同一标识符只归属一个槽位：订单号 `SO20260928001` 恰好也满足运单号模式，曾被两个正则同时认领
+- 反向也钉住：真·多轮指代（"那它到哪了"）必须**仍然**继承 —— 修跨轮继承时最容易顺手把正常追问一起打死
 
 **检索层（`test_rerank.py`，8 条）** —— 钉住下面那条设计决策 7：
 
@@ -410,7 +417,7 @@ push main → GitHub Actions → SSH → /opt/veyacare/deploy/cicd-deploy.sh
 - 满意度闭环（`POST /api/feedback` → 看板可见）与转人工、会话管理三条接口链路均有接口级测试
 - 100 条评测集 + 可回归的评测脚本，检索 Hit@5 100% / 要点覆盖 98%
 - Dockerfile（后端 + 前端多阶段）、docker-compose、GitHub Actions（测试 + 评测门禁 + 镜像冒烟）
-- 后端 52/52 测试通过；前端 reducer 契约 36 条断言通过；接口契约校验 383 项通过
+- 后端 62/62 测试通过；前端 reducer 契约 36 条断言通过；接口契约校验全项通过（本次 401 项，项数随库中会话数浮动）
 - **已部署上线**：香港服务器原生部署（PM2 + nginx），push 到 main 自动发布，见「部署」一节
 
 **未完成**

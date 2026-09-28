@@ -148,6 +148,20 @@ def check_events(where: str, events: list[dict]) -> None:
             for field, expect in SSE_REQUIRED[str(etype)]:
                 typed(where, ev.get(field), expect, f"{etype}.{field}")
     check(where, "session" in seen or "done" in seen, "没有 session/done 事件")
+
+    # 槽位互斥：订单号与运单号不能被填成同一个值。
+    # SO20260928001 满足运单号正则 [A-Z]{2}\d{9,13}，两个槽位曾经拿到同一个字符串，
+    # 前端槽位标签上显示成「订单号：SO… 运单号：SO…」——看着像两个都查到了，
+    # 实际运单号那格填的是用户自己的订单号。docs/API.md 的示例里写的本来就是
+    # "tracking_no": null，是代码跑偏了。
+    for ev in events:
+        if ev.get("type") != "intent":
+            continue
+        slots = ev.get("slots")
+        if isinstance(slots, dict) and slots.get("order_no"):
+            check(where, not slots.get("tracking_no"),
+                  f"只给了订单号 {slots['order_no']}，tracking_no 却被填成 "
+                  f"{slots.get('tracking_no')!r}（同一个标识符只能归属一个槽位）")
     # 文档里出现过的 kb 事件，其 docs[].score 前端会直接 .toFixed(2)
     for ev in events:
         if ev.get("type") == "kb":

@@ -242,3 +242,37 @@ async def test_feedback_request_does_not_leak_into_next_turn(graph, thread_confi
     second = await _run(graph, config, "我要转人工，找你们真人客服")
     assert second["intent"] == "human_agent", "这一轮应当走转人工分支"
     assert second["request_feedback"] is False, "上一轮的评分邀请不该跨轮残留"
+
+
+async def test_policy_question_does_not_borrow_previous_order(graph, thread_config):
+    """纯政策问题不能拿上一轮的订单号去查真实数据。
+
+    线上实测：先问「我的包裹到哪了？订单号 SO20260928001」，再问
+    「当前平台的退换货政策是什么，什么商品允许退换货」——第二句一个字都没提订单，
+    回复里却出现了「费用说明：从退款中扣除 USD 4.99 作为退回运费」。
+    那 4.99 来自上一轮那个美国订单的真实运费表，数字全是真的，
+    只是回答的不是用户问的问题，而用户无从分辨。
+
+    根因是槽位跨轮继承：桩把上一轮和本轮拼成整段再抽槽位，
+    而 prompt 当时写的也正是「从整段对话里抽取」。
+
+    这里断言的是**整条链路**，不是桩的单个函数——因为真正要守住的是
+    「工具不要被一个没人问的订单号触发」，那要槽位与工具决策同时对才行。
+    """
+    config = thread_config(f"t-{uuid.uuid4().hex[:8]}")
+
+    first = await _run(graph, config, "我的包裹到哪了？订单号 SO20260928001")
+    assert first["slots"]["order_no"] == "SO20260928001"
+    # 订单号长得也像运单号（两个字母 + 一串数字），曾被一并抽成 tracking_no，
+    # 前端槽位标签上于是显示成两个一样的值
+    assert first["slots"].get("tracking_no") is None, "订单号不该被当成运单号"
+
+    second = await _run(graph, config, "当前平台的退换货政策是什么，什么商品允许退换货")
+
+    assert second["intent"] == "return_refund"
+    assert not second["slots"].get("order_no"), "本轮没提订单，不该继承上一轮的订单号"
+    assert second["tool_results"] == [], "没有订单号就不该调退货运费工具"
+
+    reply = _last_ai_text(second)
+    assert "SO20260928001" not in reply
+    assert "4.99" not in reply, "这个数字只可能来自上一单的退货运费表"

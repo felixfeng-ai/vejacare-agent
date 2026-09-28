@@ -63,7 +63,12 @@ _INTENT_KEYWORDS: list[tuple[str, tuple[str, ...]]] = [
 ]
 
 _ORDER_NO_RE = re.compile(r"\b(SO\d{10,16}|\d{12,20})\b", re.IGNORECASE)
-_TRACKING_RE = re.compile(r"\b([A-Z]{2}\d{9,13}|LP\d{10,14})\b", re.IGNORECASE)
+# 运单号不能只认「两个字母 + 一串数字」：订单号 SO20260928001 恰好也长这样，
+# 于是同一串字符被两个正则同时认领，前端槽位标签上就变成
+# 「订单号：SO20260928001 运单号：SO20260928001」——用户看到的是我们连
+# 运单号都查出来了，实际那个位置填的是他自己的订单号。
+# 排除 SO 前缀（订单号专属），一个标识符只归属一个槽位。
+_TRACKING_RE = re.compile(r"\b(?!SO\d)([A-Z]{2}\d{9,13}|LP\d{10,14})\b", re.IGNORECASE)
 _SKU_RE = re.compile(r"\b([a-z]{2}\d{6,10})\b", re.IGNORECASE)
 _EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+\.[\w.]+")
 _AMOUNT_RE = re.compile(r"(?:\$|USD\s?)(\d+(?:\.\d{1,2})?)", re.IGNORECASE)
@@ -71,6 +76,32 @@ _AMOUNT_RE = re.compile(r"(?:\$|USD\s?)(\d+(?:\.\d{1,2})?)", re.IGNORECASE)
 _COUNTRIES = ("美国", "英国", "德国", "法国", "西班牙", "意大利", "日本", "韩国", "巴西", "沙特", "阿联酋", "澳大利亚", "加拿大")
 
 _DISSATISFIED_WORDS = ("太差了", "什么破", "垃圾", "投诉", "差评", "失望", "气死", "怎么回事", "搞什么", "骗人", "退钱", "不想等")
+
+
+def _intent_score(text: str) -> tuple[str, int]:
+    """给单段文本打分，返回得分最高的意图与分数。"""
+    low = text.lower()
+    best, best_score = "chitchat", 0
+    for intent, words in _INTENT_KEYWORDS:
+        score = sum(len(w) for w in words if w in low)
+        if score > best_score:
+            best, best_score = intent, score
+    return best, best_score
+
+
+#: 回指标记：出现这些词，才认为本轮是在接着上一轮那一单说。
+#:
+#: 槽位要不要沿用上文，判据是「本轮有没有指向上一轮那个实体」，而不是「本轮是不是
+#: 在问政策」——「那退货运费怎么算？」既踩中政策问法（含「怎么算」），又确实该沿用
+#: 订单号，用政策判据会把这类正常追问一起打掉。
+_REFERENTIAL_MARKERS = (
+    "那", "它", "这单", "此单", "该单", "这一单", "这个订单", "这订单",
+    "我的订单", "我这单", "我的包裹", "上一单", "刚才", "刚说", "上面说",
+)
+
+
+def _refers_to_previous(question: str) -> bool:
+    return any(marker in question for marker in _REFERENTIAL_MARKERS)
 
 
 def classify_intent(question: str, history: list[str] | None = None) -> dict:
@@ -88,16 +119,31 @@ def classify_intent(question: str, history: list[str] | None = None) -> dict:
     haystacks = [question] + list(history or [])[:1]
 
     best_intent, best_score = "chitchat", 0
-    for text in haystacks:
-        low = text.lower()
-        for intent, words in _INTENT_KEYWORDS:
-            score = sum(len(w) for w in words if w in low)
-            if score > best_score:
-                best_intent, best_score = intent, score
+    own_score = 0
+    for index, text in enumerate(haystacks):
+        intent, score = _intent_score(text)
+        if index == 0:
+            own_score = score
+        if score > best_score:
+            best_intent, best_score = intent, score
         if best_score:
             break
 
-    return {"intent": best_intent, "slots": extract_slots(" ".join(haystacks))}
+    # 槽位只在两种情况下沿用上文：本轮明确回指上一轮（"那它到哪了"），
+    # 或本轮自己一点线索都没有（"怎么办？"，除了上文无从判断）。
+    #
+    # 早期实现是无条件把上文和本轮拼成整段再抽槽位（因为 prompt 当时写的也是
+    # 「从整段对话里抽取」），于是上一轮的订单号会悄悄"变成"本轮的槽位：
+    # 用户只问了一句「退换货政策是什么」，工具却拿着上一单的订单号查了真实数据，
+    # 回复里就出现了「从退款中扣除 USD 4.99 作为退回运费」。
+    #
+    # 拿真实数据回答一个没人问的问题，比查不到更糟——它读起来完全像是真的，
+    # 用户没有任何线索能察觉那串数字来自另一单。判不出来时宁可让用户重申订单号
+    # （responder 有现成的索要话术，blocked_on 会走那条路）。
+    inherit = _refers_to_previous(question) or own_score == 0
+    slot_source = " ".join(haystacks) if inherit else question
+
+    return {"intent": best_intent, "slots": extract_slots(slot_source)}
 
 
 def extract_slots(text: str) -> dict:
