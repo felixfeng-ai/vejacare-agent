@@ -54,11 +54,18 @@ async def session_scope() -> AsyncIterator[AsyncSession]:
 
 
 async def get_db() -> AsyncIterator[AsyncSession]:
-    """FastAPI 依赖注入用。"""
+    """FastAPI 依赖注入用。与 `session_scope` 同语义：正常返回即提交，异常回滚。
+
+    **提交语义必须与 session_scope 保持一致**，两个会话助手一个提交一个不提交
+    是「接口报成功、数据其实没落库」的温床：写接口只靠 `flush()` 是不够的，
+    flush 只把语句发给数据库，事务没提交，请求结束时 `session.close()` 会连同回滚一起丢掉。
+    接口照样返回 200 和一个新生成的 id，只有真去查库才发现什么都没有。
+    """
     factory = get_session_factory()
     async with factory() as session:
         try:
             yield session
+            await session.commit()
         except Exception:
             await session.rollback()
             raise

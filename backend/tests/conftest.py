@@ -81,6 +81,21 @@ async def graph():
     return await get_graph()
 
 
+@pytest_asyncio.fixture
+async def client():
+    """直接打 ASGI 应用的异步客户端，用于接口级测试。
+
+    刻意不走 lifespan：建表、灌种子、索引预热已经由 `_prepared_app` 做过一次，
+    再跑一遍会重复灌种子并重建索引。
+    """
+    from httpx import ASGITransport, AsyncClient
+
+    from app.main import app
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        yield ac
+
+
 @pytest.fixture
 def thread_config():
     from app.graph.builder import thread_config as make_config

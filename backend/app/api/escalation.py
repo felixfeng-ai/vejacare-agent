@@ -93,6 +93,13 @@ async def reply_escalation(
         db, escalation, human_reply=payload.reply, agent_name=payload.agent
     )
 
+    # 1.5) 必须在这里把事务提交掉，不能等请求结束。
+    # 下面唤醒图时，节点内部会另开 `session_scope()` 写库；SQLite 同一时刻只允许一个写事务，
+    # 本会话此刻持有未提交的写锁，两边会撞成 `database is locked`（实测会直接 500）。
+    # 而且这两处写入是「人工回复已送达」的完整语义，先落盘再唤醒图也更安全：
+    # 万一图恢复失败，人工的回复不会跟着一起回滚。
+    await db.commit()
+
     # 2) 唤醒挂起的图，让 Agent 做收尾
     closing_text = ""
     try:
