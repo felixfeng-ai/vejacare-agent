@@ -9,7 +9,8 @@ from __future__ import annotations
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import Field, field_validator
+from pydantic import Field, ValidationInfo, field_validator
+from pydantic_core import PydanticUndefined
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 BACKEND_DIR = Path(__file__).resolve().parent.parent
@@ -92,6 +93,27 @@ class Settings(BaseSettings):
     def is_offline(self) -> bool:
         """离线模式：LLM 与 Embedding 都不需要外网。"""
         return self.is_mock_llm and self.embedding_provider.lower() == "hashing"
+
+    @field_validator("*", mode="before")
+    @classmethod
+    def _blank_uses_default(cls, v: object, info: ValidationInfo) -> object:
+        """`.env` 里留空的非字符串项，按「未设置」处理，回落到字段默认值。
+
+        留空是 .env.example 推荐给可选配置的写法（EMBEDDING_DIM= 留空表示自动探测，
+        API key 留空表示不启用）。但 pydantic 会拿这个空字符串去解析 int/float，
+        直接抛 ValidationError —— 于是「照 README 走 cp .env.example .env」这一步
+        反而把服务弄得起不来，而本地因为从没建过 .env 完全不会暴露。
+
+        字符串字段不处理：空串本身就是合法值（llm_api_key="" 就是「没配 key」）。
+        """
+        if not isinstance(v, str) or v.strip():
+            return v
+        field = cls.model_fields.get(info.field_name)
+        if field is None or field.default is PydanticUndefined:
+            return v
+        if isinstance(field.default, str):
+            return v
+        return field.default
 
     @field_validator("chunk_overlap")
     @classmethod
