@@ -1,0 +1,24 @@
+# 这些都会在容器里重新生成，或者根本不该进镜像
+
+# 密钥：绝对不进镜像层。镜像可以被推到任何地方，层里的东西删不干净
+.env
+.env.local
+.env.*.local
+
+# 宿主机装的依赖与虚拟环境：和目标平台不一定兼容
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+
+# 索引与本地库由启动脚本重建；数据库文件里有种子数据之外的运行时数据
+data/index/
+*.db
+*.db-wal
+*.db-shm
+
+# 测试与工具缓存
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+tests/

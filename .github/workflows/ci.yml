@@ -1,0 +1,107 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+# 同一分支连续推送时掐掉上一次，别让旧提交占着 runner
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: 后端测试与检索评测
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+
+      - name: 安装依赖
+        run: pip install -r requirements.txt
+
+      - name: 建知识库索引
+        # 评测与检索测试都依赖它。离线模式（mock + hashing）不产生任何外部调用。
+        run: python -m scripts.ingest
+
+      - name: 单元与接口测试
+        run: python -m pytest -q
+
+      - name: 检索评测门禁
+        # 命中率或要点覆盖率掉下来就直接失败，别让检索悄悄退化
+        run: |
+          python -m scripts.eval \
+            --min-hit-rate 0.95 \
+            --min-keyword-coverage 0.95 \
+            --json eval-report.json
+
+      - name: 上传评测报告
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-report
+          path: backend/eval-report.json
+          if-no-files-found: ignore
+
+  frontend:
+    name: 前端类型检查与契约校验
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run build
+
+      - name: SSE 契约校验
+        # 把 docs/API.md 里的示例原样喂给 reducer，确保前后端事件契约没走样
+        run: |
+          npx esbuild tmp-reducer-check.ts --bundle --format=esm --platform=node \
+            --outfile=tmp-reducer-check.mjs
+          node tmp-reducer-check.mjs
+
+  docker:
+    name: 镜像可构建
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # 只验证构建，不推送。镜像构建失败往往到部署才发现，这里提前拦住
+      - name: 构建后端镜像
+        run: docker build -t veyacare-backend:ci ./backend
+
+      - name: 构建前端镜像
+        run: docker build -t veyacare-frontend:ci ./frontend
+
+      - name: 冒烟测试
+        # 光能构建不代表能起来，实际跑一次并探活
+        run: |
+          cp backend/.env.example backend/.env
+          docker run -d --name be -p 8000:8000 veyacare-backend:ci
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8000/api/health >/dev/null; then
+              echo "健康检查通过"; curl -s http://127.0.0.1:8000/api/health; exit 0
+            fi
+            sleep 2
+          done
+          echo "容器未在 60s 内就绪，日志如下："; docker logs be; exit 1

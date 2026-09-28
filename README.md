@@ -51,7 +51,24 @@ npm run dev                     # http://localhost:5173
 
 开发态前端走相对路径 `/api/**`，由 Vite 代理转发到 `127.0.0.1:8000`（无 CORS 问题）。要指到别的后端就在 `frontend/.env` 里设 `VITE_API_BASE`。
 
-### 3. 接真实模型
+### 3. 或者：Docker 一条命令
+
+```bash
+cp backend/.env.example backend/.env      # 必须先做，理由见下
+docker compose up --build
+# 前端 http://localhost:8080   后端 http://127.0.0.1:8000（只绑本机）
+```
+
+`.env` 是**必须**存在的：compose 用 `env_file` 把整个文件注入后端，这是唯一一份配置，本地开发和容器跑的是同一套。不想要这一步就直接改 `docker-compose.yml` 里的 `env_file` 段。
+
+几个不那么显然的点：
+
+- **前端不把后端地址烘进 JS**。生产态走相对路径 `/api/**`，由容器里的 nginx 反代到 `backend:8000`。注入 `VITE_API_BASE` 会让同一份产物换不了环境。
+- **SSE 必须关掉 nginx 缓冲**（`proxy_buffering off`）。默认 nginx 会攒够一个 buffer 再发，流式打字机会变成「转圈半天然后整段蹦出来」。`proxy_read_timeout` 也放宽到 300s——逐字返回意味着连接长期静默，默认 60s 会把长回答掐断。
+- **数据卷挂在 `/app/data`**。镜像里这个目录存在且属主是 `appuser`，Docker 初始化命名卷时会连属主一起继承；挂到新建的 `/data` 则归 root，非 root 进程起手就 `Permission denied`。
+- **入库在容器启动时跑**，不在构建时。索引依赖运行期的 embedding 配置，构建时烘进去会把当时那套模型焊死在镜像里。
+
+### 4. 接真实模型
 
 编辑 `backend/.env`：
 
@@ -354,9 +371,11 @@ cd backend
 - 前端 SSE 流式打字机 + 思考链 / 工具卡片 / 引用面板 / 转人工横幅 / 满意度评价
 - 满意度闭环（`POST /api/feedback` → 看板可见）与转人工、会话管理三条接口链路均有接口级测试
 - 100 条评测集 + 可回归的评测脚本，检索 Hit@5 100% / 要点覆盖 98%
+- Dockerfile（后端 + 前端多阶段）、docker-compose、GitHub Actions（测试 + 评测门禁 + 镜像冒烟）
 - 后端 47/47 测试通过，前端契约校验 36 条断言通过
 
 **未完成**
 
-- **部署上线**：还没有 Dockerfile / CI，演示链接待补
+- **还没有实际部署上线**：镜像与 CI 配置已就位，但本机没有 Docker，**构建与启动均未实测过**；也没有公网演示链接
+- 生产环境仍是 SQLite，`DATABASE_URL` 换 PostgreSQL 的路径通但没跑过
 - 前端只做到响应式布局，未专门针对小程序 / 原生端做适配

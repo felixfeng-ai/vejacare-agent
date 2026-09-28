@@ -1,0 +1,46 @@
+# 一条命令起完整演示环境：docker compose up --build
+#
+# 默认零配置可跑：不填任何 API key，后端跑离线演示模式（mock LLM + hashing embedding），
+# 全链路、前端、接口都能走通，只是回答来自确定性模板而不是真模型。
+# 要接真模型：先 `cp backend/.env.example backend/.env` 再改里面的 provider 与 key，
+# compose 会把该文件整个注入后端容器。
+
+services:
+  backend:
+    build:
+      context: ./backend
+    image: veyacare-backend:latest
+    env_file:
+      # 必须先 `cp backend/.env.example backend/.env`。用列表写法而不是
+      # `path:`/`required:` 对象写法，后者要 Compose v2.24+ 才认。
+      - ./backend/.env
+    environment:
+      # 覆盖 .env 里的相对路径：容器里存相对路径会随容器一起销毁
+      DATABASE_URL: sqlite+aiosqlite:////app/data/vejacare.db
+      # 前端与后端同源（都由 frontend 容器对外），浏览器不发跨域请求，
+      # CORS 只留给本机前端调试用，不跟着 .env 里的宽松值走
+      CORS_ORIGINS: http://localhost:5173,http://127.0.0.1:5173
+      DEBUG: "false"
+    volumes:
+      # 挂在 /app/data 而不是新建一个 /data：镜像里这个目录存在且属主是 appuser，
+      # Docker 初始化命名卷时会连属主一起继承；挂到别处卷归 root，非 root 进程写不进去。
+      # 里面装着 SQLite 与检索索引——索引丢了能重建，会话与工单丢了找不回来。
+      - veyacare-data:/app/data
+    ports:
+      # 只绑本机，供调试直连；对外访问走下面的 frontend
+      - "127.0.0.1:8000:8000"
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+    image: veyacare-frontend:latest
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "8080:80"
+    restart: unless-stopped
+
+volumes:
+  veyacare-data:

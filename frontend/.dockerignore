@@ -1,0 +1,13 @@
+# 依赖与产物都在镜像里重装重建，从宿主机拷进去只会污染平台差异
+node_modules/
+dist/
+dist-ssr/
+
+# 本地覆盖文件（VITE_API_BASE 等），不该进镜像
+.env
+.env.local
+.env.*.local
+*.local
+
+# 契约校验脚本的构建产物，源码才是有用的那个
+tmp-reducer-check.mjs
