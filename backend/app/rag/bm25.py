@@ -60,6 +60,22 @@ class BM25Index:
         # 分数为 0 表示没有任何词命中，属于噪声，直接丢掉
         return [(cid, score) for cid, score in ranked[:top_k] if score > 0]
 
+    def score_map(self, query: str) -> dict[str, float]:
+        """全语料的 {chunk_id: bm25_score}，不做截断也不丢 0 分。
+
+        精排阶段需要给一批**已经召回好的**候选打分，这些候选不一定是 BM25 的 top-k；
+        而 `search()` 只回 top-k 且滤掉了 0 分，拿不到候选全集。所以单开一个口子。
+        """
+        if self._index is None or not self._ids:
+            return {}
+
+        tokens = tokenize(query)
+        if not tokens:
+            return {}
+
+        scores = self._index.get_scores(tokens)
+        return {cid: float(s) for cid, s in zip(self._ids, scores)}
+
     @property
     def size(self) -> int:
         return len(self._ids)

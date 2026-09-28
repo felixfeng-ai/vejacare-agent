@@ -66,6 +66,9 @@ class Settings(BaseSettings):
     rerank_base_url: str = "https://dashscope.aliyuncs.com/api/v1"
     rerank_api_key: str = ""
     rerank_model: str = "gte-rerank-v2"
+    #: 无模型精排（RERANK_PROVIDER=none）时，词面信号在最终排序里占的权重。
+    #: 0 = 纯 RRF 序；实测 0.15~0.5 是一段平台期，越大越偏向字面命中。见 rerank.py
+    rerank_lexical_weight: float = 0.3
 
     # ---------- 转人工策略 ----------
     escalation_max_unresolved_turns: int = 2
