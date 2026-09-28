@@ -16,6 +16,7 @@
 - [配置](#配置)
 - [测试](#测试)
 - [离线评测](#离线评测)
+- [部署](#部署)
 - [当前进度](#当前进度)
 
 ---
@@ -293,11 +294,12 @@ cs-agent/
 ## 测试
 
 ```bash
-cd backend
-.venv/Scripts/python -m pytest        # 47 passed
+.venv/Scripts/python -m pytest        # 51 passed（在仓库根或 backend/ 下跑都一样）
 ```
 
-分三层：`test_graph.py` 直接驱动图，`test_rerank.py` 打检索层，其余三个文件走 HTTP 打真实接口。
+> `pytest.ini` 特意放在**仓库根**而不是 `backend/` 下。配置若只存在于 `backend/`，从仓库根直接敲 `pytest` 就找不到它，`asyncio_mode` 与 loop scope 两项设置随之失效 —— session 级异步 fixture 与测试落到不同事件循环上，图与 checkpointer 的 aiosqlite 连接跨 loop 复用，转人工 resume 失效。表现是 51 条里 23 条报错，而代码一行没坏，排查时只能看到 `GraphInterrupt` 和「收尾回复为空」这类业务断言。
+
+分四层：`test_graph.py` 直接驱动图，`test_rerank.py` 打检索层，`test_config.py` 打配置解析，其余三个文件走 HTTP 打真实接口。
 
 **图流程（`test_graph.py`，10 条）** —— 改任何节点、任何 prompt、任何检索参数，只要主链路跑挂了这里就会红：
 
@@ -315,6 +317,8 @@ cd backend
 - 答案片段必须活过 `top_n` 截断（修之前它排第 6，必然红）
 - 只含泛化扩展词的片段不许排在真正回答问题的片段前面
 - 字面命中查询词的候选会被提上来；零重叠时老实退回 RRF 序；排序可复现
+
+**配置层（`test_config.py`，4 条）** —— 直接拿仓库里那份 `.env.example` 去解析，钉住「照 README 走 `cp .env.example .env` 必须能起来」。这条测试是有来由的：`.env.example` 给可选配置留了空值（`EMBEDDING_DIM=` 留空表示自动探测），而 pydantic 会拿空字符串去解析 `int` 直接抛 `ValidationError`，于是文档推荐的第一步反而把服务弄挂。本地一直没暴露，因为本地从没真的建过 `.env`。
 
 **接口层（29 条）** —— 断言一律「开一个全新的数据库会话去读」，只认真提交过的数据，因此能抓到「接口报成功、数据其实没落库」这类光看返回值发现不了的问题：
 
@@ -360,6 +364,26 @@ cd backend
 
 ---
 
+## 部署
+
+线上跑在**香港服务器**上，原生部署：
+
+```
+push main → GitHub Actions → SSH → /opt/veyacare/deploy/cicd-deploy.sh
+```
+
+| 组件 | 做法 | 为什么这么选 |
+|---|---|---|
+| 后端 | venv + PM2 跑 `uvicorn`，只听 `127.0.0.1:3002` | 服务器上没有 Docker，且可用内存只剩 1.1G |
+| 前端 | `npm run build` 出静态文件，nginx 直接托管 | 静态文件几乎不占常驻内存 |
+| 网关 | nginx：`/` 吐静态文件、`/api/**` 反代到 `3002` | 前端走相对路径 `/api`，同源部署天然没有跨域 |
+
+**部署脚本是幂等的**，可安全重复执行：nginx 配置内容没变就不覆盖、不白 reload。它会自动安装 nginx 站点配置、重建检索索引、构建前端（先出到 `dist.new` 再原子替换，避免构建途中用户拿到写了一半的资源）、`pm2 startOrReload`，最后做端到端自检（后端 `/api/health` + 经 nginx 的首页与接口），任一步失败立刻非 0 退出并打印日志。
+
+**`docker-compose.yml` 仍然保留**，用于本地一条命令起完整环境；服务器上没用它，是因为 **Docker 会改 iptables 且要常驻约 200M 内存，而这台机器上还跑着另外两个线上站点**。
+
+首次部署需要在仓库配两个 Secret：`VEYACARE_HOST`（服务器 IP）与 `VEYACARE_SSH_KEY`（部署私钥全文）。域名首次解析后跑一次 `sudo certbot --nginx -d cs.veyawork.work` 即可拿到 HTTPS。
+
 ## 当前进度
 
 **已完成**
@@ -372,10 +396,11 @@ cd backend
 - 满意度闭环（`POST /api/feedback` → 看板可见）与转人工、会话管理三条接口链路均有接口级测试
 - 100 条评测集 + 可回归的评测脚本，检索 Hit@5 100% / 要点覆盖 98%
 - Dockerfile（后端 + 前端多阶段）、docker-compose、GitHub Actions（测试 + 评测门禁 + 镜像冒烟）
-- 后端 47/47 测试通过，前端契约校验 36 条断言通过
+- 后端 51/51 测试通过，前端契约校验 36 条断言通过
+- **已部署上线**：香港服务器原生部署（PM2 + nginx），push 到 main 自动发布，见「部署」一节
 
 **未完成**
 
-- **还没有实际部署上线**：镜像与 CI 配置已就位，但本机没有 Docker，**构建与启动均未实测过**；也没有公网演示链接
 - 生产环境仍是 SQLite，`DATABASE_URL` 换 PostgreSQL 的路径通但没跑过
 - 前端只做到响应式布局，未专门针对小程序 / 原生端做适配
+- 线上跑的是 mock 模式（离线演示）。接真模型只需改服务器上 `backend/.env` 里的 provider 与 key

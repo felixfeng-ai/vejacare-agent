@@ -1,0 +1,37 @@
+name: Deploy Production
+
+# 与 i面试 / 成剧 同一套模式：
+# push 到 main → SSH 到香港服务器 → 执行服务器上的 deploy/cicd-deploy.sh
+#
+# 首次使用需要在 GitHub 仓库里配两个 Secret：
+#   Settings → Secrets and variables → Actions → New repository secret
+#   VEYACARE_HOST     = 服务器 IP
+#   VEYACARE_SSH_KEY  = 部署用私钥全文（本地 ~/.ssh/ci_deploy）
+#
+# 注意 ci.yml 也会在 push 时跑。两者互不依赖：CI 只做校验，
+# 本工作流只管部署。CI 红了也照样部署 —— 这是刻意的，
+# 部署脚本自身带端到端自检，失败会以非 0 退出并留下日志。
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    name: 部署到生产服务器
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: SSH 执行服务器部署脚本
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.VEYACARE_HOST }}
+          username: ubuntu
+          key: ${{ secrets.VEYACARE_SSH_KEY }}
+          # 服务器上只有 Node 与 Python，npm ci + pip install 都要走公网，
+          # 默认 10 分钟在冷启动（依赖全量安装）时不够
+          command_timeout: 15m
+          script: |
+            set -e
+            bash /opt/veyacare/deploy/cicd-deploy.sh
