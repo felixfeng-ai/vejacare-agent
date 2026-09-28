@@ -160,7 +160,14 @@ export interface FeedbackResult {
 export interface Metrics {
   total_sessions: number;
   rated_sessions: number;
-  avg_rating: number;
+  /**
+   * 无评价时为 null —— 不是 0。
+   *
+   * 后端返回 null 而不是 0.0 是刻意的：「还没有人评分」和「平均 0 分」是两码事，
+   * 用 0 表示前者会把看板上的平均分误导成极差。前端必须显式处理这个 null。
+   * 这里原来写的是 `number`，是手写断言、不是从接口推导的，所以 tsc 查不出来。
+   */
+  avg_rating: number | null;
   rating_distribution: Record<string, number>;
   escalation_rate: number;
   auto_resolved_rate: number;

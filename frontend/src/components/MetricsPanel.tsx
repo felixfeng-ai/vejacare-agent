@@ -73,9 +73,17 @@ export default function MetricsPanel({ onClose }: { onClose: () => void }) {
               </div>
               <div className="metric">
                 <span className="metric__label">平均分</span>
+                {/* avg_rating 在无人评分时是 null（后端刻意区分「没评分」与「0 分」），
+                    直接 .toFixed 会抛 TypeError 把整个看板打崩 */}
                 <span className="metric__value">
-                  {metrics.avg_rating.toFixed(2)}
-                  <small className="metric__unit">/{MAX_STARS}</small>
+                  {metrics.avg_rating === null ? (
+                    <small className="metric__unit">暂无评分</small>
+                  ) : (
+                    <>
+                      {metrics.avg_rating.toFixed(2)}
+                      <small className="metric__unit">/{MAX_STARS}</small>
+                    </>
+                  )}
                 </span>
               </div>
               <div className="metric">
