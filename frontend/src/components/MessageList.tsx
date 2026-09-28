@@ -5,7 +5,7 @@
  * 流式追加 token 时只有最后一个实时气泡重渲染（其余元素引用不变，React.memo 生效）。
  */
 
-import { useEffect, useMemo, useRef } from 'react';
+import { useLayoutEffect, useMemo, useRef } from 'react';
 
 import MessageBubble from './MessageBubble';
 import type { ChatMessage } from '../api/types';
@@ -21,6 +21,8 @@ const SUGGESTIONS: string[] = [
 ];
 
 export interface MessageListProps {
+  /** 当前会话 id，换会话时用来重新贴底 */
+  sessionId: string | null;
   messages: ChatMessage[];
   liveMessage: ChatMessage | null;
   loading: boolean;
@@ -29,6 +31,7 @@ export interface MessageListProps {
 }
 
 export default function MessageList({
+  sessionId,
   messages,
   liveMessage,
   loading,
@@ -36,7 +39,25 @@ export default function MessageList({
   onSuggestion,
 }: MessageListProps) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
-  const endRef = useRef<HTMLDivElement | null>(null);
+
+  /**
+   * 上一次提交时内容有多高。
+   *
+   * 判断"要不要贴底"，必须拿**上一次**的高度来量，把这一次长高的部分减掉，
+   * 量出来的才是"用户自己滚动留下的位置"。
+   *
+   * 换成就地量 `scrollHeight - scrollTop - clientHeight` 是不行的：那是拿长高
+   * **之后**的高度在量，于是一次渲染长高超过 120 像素就会被误判成"用户上翻了"——
+   * 思考链与工具卡正是一次性渲染出来的（一次几百像素），每轮回答开头都要踩一次；
+   * 而内容只会继续变高，距离再也回不到阈值以内，跟随就被**永久**关掉，
+   * 整段回答都停在原地。这个误判只在"先加载过一段历史、再提问"时出现，
+   * 所以看起来像是偶发。
+   *
+   * 也试过"用滚动事件记录用户意图"：滚动事件是排队派发的，我们自己的贴底写入会
+   * 先执行、用户的上翻事件后处理，处理器读到的已经是贴底后的位置，于是把用户的
+   * 上翻当成"他在底部"，回答继续往下跑，人却被留在上面。
+   */
+  const prevHeightRef = useRef(0);
 
   const items = useMemo(
     () => messages.map((message) => <MessageBubble key={message.id} message={message} onRetry={onRetry} />),
@@ -46,13 +67,34 @@ export default function MessageList({
   const liveText = liveMessage?.content ?? '';
   const liveIdle = liveMessage !== null && liveText.length === 0;
 
-  // 新消息 / 新 token 时跟随到底部（用户主动上翻时不打扰）
-  useEffect(() => {
+  const prevSessionRef = useRef(sessionId);
+  const prevLiveRef = useRef(liveMessage !== null);
+
+  /**
+   * 贴底。用 useLayoutEffect 而不是 useEffect：滚动位置的调整必须在浏览器绘制前完成，
+   * 否则会看到一次"停在原地再跳下去"的抖动。
+   *
+   * 强制贴底只认两种**边沿**：换会话、以及用户刚发出问题（live 由无变有）。
+   * 反向的边沿（回答结束、live 变回 null）不能强制 —— 那时用户可能正上翻看历史，
+   * 拽他回底部是最招人烦的一种"帮忙"。
+   */
+  useLayoutEffect(() => {
     const container = scrollRef.current;
     if (container === null) return;
-    const distance = container.scrollHeight - container.scrollTop - container.clientHeight;
-    if (distance < STICK_THRESHOLD_PX) endRef.current?.scrollIntoView({ block: 'end' });
-  }, [items, liveText, loading]);
+
+    const height = container.scrollHeight;
+    const prevHeight = prevHeightRef.current;
+    prevHeightRef.current = height;
+
+    const sessionChanged = prevSessionRef.current !== sessionId;
+    const liveStarted = liveMessage !== null && !prevLiveRef.current;
+    prevSessionRef.current = sessionId;
+    prevLiveRef.current = liveMessage !== null;
+
+    const userDistance = prevHeight - container.scrollTop - container.clientHeight;
+    if (!sessionChanged && !liveStarted && userDistance >= STICK_THRESHOLD_PX) return;
+    container.scrollTop = height;
+  }, [items, liveText, loading, sessionId, liveMessage]);
 
   const isEmpty = messages.length === 0 && liveMessage === null;
 
@@ -86,8 +128,6 @@ export default function MessageList({
         <MessageBubble key="__live__" message={liveMessage} onRetry={onRetry} />
       )}
       {liveIdle && <span className="sr-only" role="status">AI 正在输入</span>}
-
-      <div ref={endRef} />
     </div>
   );
 }

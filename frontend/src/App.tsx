@@ -111,6 +111,7 @@ export default function App() {
         )}
 
         <MessageList
+          sessionId={sessionId}
           messages={messages}
           liveMessage={liveMessage}
           loading={loadingHistory}
