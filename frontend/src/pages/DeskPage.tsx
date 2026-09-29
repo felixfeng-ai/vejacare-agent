@@ -53,18 +53,18 @@ export default function DeskPage() {
     if (name !== '') setAgent(name);
   }, [name]);
 
-  const loadList = useCallback(async (keepSelection = true): Promise<void> => {
+  const loadList = useCallback(async (): Promise<void> => {
     setLoading(true);
     try {
       const rows = await api.listEscalations();
       setList(rows);
       setError(null);
-      if (!keepSelection) {
-        setSelectedId(null);
-        setDetail(null);
-        return;
-      }
-      // 选中的那张被处理掉之后，列表里就没有它了，改选第一张。
+      // 选中的那张还在就留着，不在了（例如刚被处理掉）就选第一张。
+      //
+      // 这里原来带一个 keepSelection 开关，进入页面和回复之后都传 false 把所有选中清掉
+      // ——那是抽屉时代的写法（每次拉开都当新的一次）。放到整页上就成了：一进来右侧
+      // 空着、客服得自己点一下才知道有内容。队列页的正确默认是「让人看见队首」。
+      //
       // 更新函数必须是纯的（StrictMode 下会被调用两次），所以不在这里清 detail，
       // 交给下面那个跟随 selectedId 的 effect
       setSelectedId((current) => {
@@ -79,7 +79,7 @@ export default function DeskPage() {
   }, []);
 
   useEffect(() => {
-    void loadList(false);
+    void loadList();
   }, [loadList]);
 
   // 换选中项就拉详情，上下文只有详情接口才返回
@@ -123,7 +123,7 @@ export default function DeskPage() {
           : '已回复，用户端可以继续对话了',
       );
       setError(null);
-      await loadList(false);
+      await loadList();
     } catch (err) {
       setError(userMessageOf(err));
     } finally {
@@ -138,7 +138,7 @@ export default function DeskPage() {
       await api.resolveEscalation(detail.id);
       setDone('已标记完成');
       setError(null);
-      await loadList(false);
+      await loadList();
     } catch (err) {
       setError(userMessageOf(err));
     } finally {
@@ -153,7 +153,7 @@ export default function DeskPage() {
       <ConsoleHeader
         title="人工工单台"
         badge={pending > 0 ? `${pending} 张待处理` : undefined}
-        onRefresh={() => void loadList(false)}
+        onRefresh={() => void loadList()}
         refreshing={loading}
       />
 
