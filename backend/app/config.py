@@ -16,6 +16,9 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 BACKEND_DIR = Path(__file__).resolve().parent.parent
 KNOWLEDGE_DIR = BACKEND_DIR / "data" / "knowledge"
 
+#: 后台令牌签名密钥的最短长度（见 Settings.console_token_secret）
+MIN_SECRET_LENGTH = 16
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
@@ -84,9 +87,12 @@ class Settings(BaseSettings):
     console_admin_password: str = ""
     #: 令牌签名密钥。留空同样视为后台未启用。
     #: 长度下限 16：密钥是签名方案唯一的安全边界，太短就能被离线爆破出伪造令牌。
-    #: 下限写在这里而不是运行时判，是为了让误配在启动时就炸出来（fail fast）。
-    #: 空串是「未启用」的合法写法，不受下限约束（校验器不校验默认值）。
-    console_token_secret: str = Field(default="", min_length=16)
+    #: 下限由下面的校验器判，**不用 Field(min_length=…)**：pydantic-settings 与 pydantic
+    #: 不同，「默认值」也要过一遍校验，于是 default="" 会撞上自己的 min_length，
+    #: 结果是「没配后台」这个最该能跑的状态反而起不来。而 .env.example 里这三个键
+    #: 就是留空的——照 README 走 `cp .env.example .env` 的人一启动就崩，
+    #: 本地因为从没建过 .env 完全不会暴露。
+    console_token_secret: str = ""
     #: 令牌有效期（分钟）。默认 12 小时：够一个班次，又不至于长期有效。
     #: 下限写在这里而不是在签发函数里：配置错误该在启动时就报出来（fail fast），
     #: 签发函数则保持老实——给它一个负数就该签出一个已过期的令牌，而不是偷偷改成 1 分钟
@@ -140,6 +146,23 @@ class Settings(BaseSettings):
         if isinstance(field.default, str):
             return v
         return field.default
+
+    @field_validator("console_token_secret")
+    @classmethod
+    def _secret_long_enough(cls, v: str) -> str:
+        """签名密钥要么留空（= 后台关闭），要么够长。
+
+        空串是「未启用」的合法写法，不能拦；但一旦真的配了，太短就等于没有安全边界——
+        密钥是这套签名方案唯一能防伪造的东西，短密钥可以离线爆破出任意角色的令牌。
+        放在配置层判而不是签发时判，是为了让误配在启动时就炸出来（fail fast），
+        而不是等到某个攻击者先发现。
+        """
+        if v and len(v) < MIN_SECRET_LENGTH:
+            raise ValueError(
+                f"CONSOLE_TOKEN_SECRET 至少 {MIN_SECRET_LENGTH} 位（当前 {len(v)} 位）；"
+                "留空表示关闭后台。可用 openssl rand -hex 32 生成"
+            )
+        return v
 
     @field_validator("chunk_overlap")
     @classmethod
