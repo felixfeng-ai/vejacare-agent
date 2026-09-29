@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db import repository
 from app.db.session import get_db
 from app.schemas import FeedbackRequest, fail, ok
+from app.security import ROLE_ADMIN, require_role
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +44,13 @@ async def submit_feedback(payload: FeedbackRequest, db: AsyncSession = Depends(g
     return ok({"feedback_id": feedback.id, "rating": payload.rating})
 
 
-@router.get("/metrics/satisfaction")
+# 看板只给管理者：这是经营数据，客服看单条工单就够了，不该看到整体满意度走势。
+# 注意不能像 escalations 那样挂在 router 上——同一个 router 下的 /feedback
+# 是用户端提交评价用的，必须保持公开。
+@router.get(
+    "/metrics/satisfaction",
+    dependencies=[Depends(require_role(ROLE_ADMIN))],
+)
 async def satisfaction(db: AsyncSession = Depends(get_db)) -> dict:
     metrics = await repository.satisfaction_metrics(db)
 

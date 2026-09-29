@@ -36,7 +36,6 @@ export interface SidebarProps {
   onDelete: (sessionId: string) => void;
   onNew: () => void;
   onRefresh: () => void;
-  onOpenMetrics: () => void;
 }
 
 export default function Sidebar({
@@ -51,7 +50,6 @@ export default function Sidebar({
   onDelete,
   onNew,
   onRefresh,
-  onOpenMetrics,
 }: SidebarProps) {
   return (
     <>
@@ -139,11 +137,6 @@ export default function Sidebar({
           </ul>
         </nav>
 
-        <footer className="sidebar__foot">
-          <button type="button" className="btn btn--ghost sidebar__metrics" onClick={onOpenMetrics}>
-            📊 数据看板
-          </button>
-        </footer>
       </aside>
     </>
   );

@@ -965,53 +965,343 @@ input {
   cursor: pointer;
 }
 
-/* ---------- 看板抽屉 ---------- */
-.drawer {
-  position: fixed;
-  inset: 0;
-  z-index: 30;
-}
-
-.drawer__mask {
-  position: absolute;
-  inset: 0;
-  background: rgba(17, 24, 39, 0.4);
-}
-
-.drawer__panel {
-  position: absolute;
-  top: 0;
-  right: 0;
-  bottom: 0;
-  width: min(420px, 92vw);
-  padding: 18px;
+/* ---------- 后台整页（/login /desk /admin） ---------- */
+/* 原来这里是抽屉（.drawer）：抽屉是为了把工单台塞进用户页面才有的形状，
+   于是客服的工作台就出现在用户眼前。改成路由页之后不再需要这层壳。 */
+.page {
+  height: 100vh;
+  height: 100dvh;
+  padding: 20px 24px 32px;
   overflow-y: auto;
-  background: var(--surface);
-  box-shadow: var(--shadow);
+  background: var(--bg);
 }
 
-.drawer__head {
+.page--center {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  margin-bottom: 14px;
+  justify-content: center;
 }
 
-.drawer__title {
-  margin: 0;
-  font-size: 16px;
+.page__hint {
+  margin: 4px 0;
+  font-size: 13px;
+  color: var(--text-muted);
 }
 
-.drawer__tools {
+.page__back {
+  font-size: 12px;
+  color: var(--text-muted);
+  text-align: center;
+  text-decoration: none;
+}
+
+.page__back:hover {
+  color: var(--text);
+}
+
+/* 登录表单：一栏窄卡片，别让输入框横跨整个屏幕 */
+.card--narrow {
   display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: min(360px, 100%);
+  padding: 22px;
+  background: var(--surface);
+}
+
+.card--narrow .card__title {
+  font-size: 18px;
+}
+
+.field__label {
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.field__input {
+  padding: 8px 10px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.field__input:focus {
+  border-color: var(--primary);
+  outline: none;
+}
+
+.card--narrow .btn {
+  margin-top: 14px;
+}
+
+/* ---------- 后台页头 ---------- */
+.console__head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: flex-start;
+  justify-content: space-between;
+  max-width: 1180px;
+  margin: 0 auto 16px;
+}
+
+.console__title {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.console__name {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin: 0;
+  font-size: 18px;
+}
+
+.console__who {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.console__tools {
+  display: flex;
+  flex-wrap: wrap;
   gap: 8px;
   align-items: center;
 }
 
-.drawer__hint {
-  margin: 4px 0;
-  font-size: 13px;
+.console__tools .btn {
+  text-decoration: none;
+}
+
+/* ---------- 人工工单台 ---------- */
+.desk {
+  display: grid;
+  grid-template-columns: minmax(240px, 320px) 1fr;
+  gap: 16px;
+  max-width: 1180px;
+  margin: 0 auto;
+  align-items: start;
+}
+
+.desk__list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: calc(100dvh - 160px);
+  padding: 0;
+  margin: 0;
+  overflow-y: auto;
+  list-style: none;
+}
+
+.desk__item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 100%;
+  padding: 10px 12px;
+  text-align: left;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.desk__item:hover {
+  border-color: var(--primary);
+}
+
+.desk__item--on {
+  background: var(--primary-weak);
+  border-color: var(--primary);
+}
+
+.desk__item-top {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.desk__tag {
+  padding: 1px 6px;
+  font-size: 11px;
+  border-radius: 999px;
+}
+
+.desk__tag--pending {
+  color: var(--warn);
+  background: var(--warn-weak);
+}
+
+.desk__tag--resolved {
+  color: var(--success);
+  background: var(--surface-3);
+}
+
+.desk__time {
+  font-size: 11px;
   color: var(--text-muted);
+}
+
+.desk__item-title {
+  font-weight: 500;
+}
+
+.desk__item-sub {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.desk__detail {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 16px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.desk__meta {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 10px;
+  margin: 0;
+}
+
+.desk__meta dt {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.desk__meta dd {
+  margin: 0;
+  font-size: 13px;
+  word-break: break-all;
+}
+
+.desk__row {
+  display: flex;
+  gap: 10px;
+  margin: 0;
+  font-size: 13px;
+}
+
+.desk__row-key {
+  flex: 0 0 56px;
+  color: var(--text-muted);
+}
+
+.desk__row-val {
+  min-width: 0;
+}
+
+.desk__sub-title {
+  margin: 6px 0 0;
+  font-size: 13px;
+}
+
+/* 对话记录：客服要按时间顺序读下来，气泡贴边会打断阅读，所以是左对齐的列表 */
+.desk__thread {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 320px;
+  padding: 10px 12px;
+  overflow-y: auto;
+  background: var(--surface-2);
+  border-radius: var(--radius-sm);
+}
+
+.desk__msg {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.desk__msg-role {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.desk__msg-text {
+  font-size: 13px;
+  white-space: pre-wrap;
+}
+
+.desk__msg--human_agent .desk__msg-text {
+  color: var(--primary);
+}
+
+.desk__reply {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+
+.desk__label {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.desk__input,
+.desk__textarea {
+  padding: 8px 10px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.desk__textarea {
+  resize: vertical;
+}
+
+.desk__actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.desk__closed {
+  margin: 0;
+  font-size: 13px;
+  color: var(--success);
+}
+
+.desk__error {
+  max-width: 1180px;
+  margin: 0 auto 12px;
+  font-size: 13px;
+  color: var(--danger);
+}
+
+.desk__done {
+  max-width: 1180px;
+  margin: 0 auto 12px;
+  font-size: 13px;
+  color: var(--success);
+}
+
+.desk__badge {
+  padding: 1px 8px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--warn);
+  background: var(--warn-weak);
+  border-radius: 999px;
+}
+
+/* 看板里的指标网格：现在在 .page 里，收一下宽度免得拉满整屏 */
+.page .metrics {
+  max-width: 720px;
+  margin: 0 auto;
 }
 
 .metrics__grid {
@@ -1097,13 +1387,15 @@ input {
 /* ---------- 滚动条 ---------- */
 .sessions::-webkit-scrollbar,
 .messages::-webkit-scrollbar,
-.drawer__panel::-webkit-scrollbar {
+.desk__list::-webkit-scrollbar,
+.desk__thread::-webkit-scrollbar {
   width: 8px;
 }
 
 .sessions::-webkit-scrollbar-thumb,
 .messages::-webkit-scrollbar-thumb,
-.drawer__panel::-webkit-scrollbar-thumb {
+.desk__list::-webkit-scrollbar-thumb,
+.desk__thread::-webkit-scrollbar-thumb {
   background: var(--border);
   border-radius: 999px;
 }
@@ -1142,8 +1434,26 @@ input {
     justify-content: center;
   }
 
-  .chat__metrics {
-    display: none;
+  /* 工单台在窄屏上排成两栏就没法用了，改成上下堆叠 */
+  .desk {
+    grid-template-columns: 1fr;
+  }
+
+  .desk__list {
+    max-height: 40dvh;
+  }
+
+  .page {
+    padding: 14px 14px 24px;
+  }
+
+  .console__head {
+    align-items: stretch;
+  }
+
+  .console__tools .btn {
+    flex: 1;
+    justify-content: center;
   }
 
   .bubble {

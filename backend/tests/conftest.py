@@ -20,6 +20,13 @@ os.environ["RERANK_PROVIDER"] = "none"
 os.environ["QDRANT_URL"] = ""
 os.environ["DEBUG"] = "false"
 
+# 后台口令：固定的测试值，与生产无关。生产口令由部署脚本随机生成。
+# 之所以必须显式设置而不是靠默认值：默认值是空串 = 后台整体关闭，
+# 那所有受保护接口都会返回 503，鉴权测试会集体"通过"得毫无意义。
+os.environ["CONSOLE_AGENT_PASSWORD"] = TEST_AGENT_PASSWORD = "test-agent-pwd"
+os.environ["CONSOLE_ADMIN_PASSWORD"] = TEST_ADMIN_PASSWORD = "test-admin-pwd"
+os.environ["CONSOLE_TOKEN_SECRET"] = "test-token-secret"
+
 import pytest  # noqa: E402
 import pytest_asyncio  # noqa: E402
 
@@ -93,6 +100,59 @@ async def client():
     from app.main import app
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        yield ac
+
+
+@pytest.fixture(autouse=True)
+def _reset_login_failures():
+    """登录失败计数是进程内的全局字典，测试之间会互相污染。
+
+    没有这个夹具，一个"连续失败触发锁定"的用例会把后面的登录用例一起锁掉——
+    而且报错会指向后面的用例，排查起来南辕北辙。
+    """
+    from app.security import reset_login_failures
+
+    reset_login_failures()
+    yield
+    reset_login_failures()
+
+
+def _auth_header(role: str) -> dict[str, str]:
+    from app.security import issue_token
+
+    token, _ = issue_token(role, "测试客服")
+    return {"Authorization": f"Bearer {token}"}
+
+
+@pytest_asyncio.fixture
+async def agent_client():
+    """带客服令牌的客户端。"""
+    from httpx import ASGITransport, AsyncClient
+
+    from app.main import app
+    from app.security import ROLE_AGENT
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://test",
+        headers=_auth_header(ROLE_AGENT),
+    ) as ac:
+        yield ac
+
+
+@pytest_asyncio.fixture
+async def admin_client():
+    """带管理令牌的客户端。"""
+    from httpx import ASGITransport, AsyncClient
+
+    from app.main import app
+    from app.security import ROLE_ADMIN
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://test",
+        headers=_auth_header(ROLE_ADMIN),
+    ) as ac:
         yield ac
 
 

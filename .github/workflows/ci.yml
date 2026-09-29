@@ -45,6 +45,14 @@ jobs:
         # 手写断言、不是从接口推导的，tsc 查不出来 —— 满意度看板的 avg_rating
         # 在没有评价时返回 null，前端却直接 .toFixed(2)，编译期一路绿灯，
         # 直到用户点开看板才崩。
+        #
+        # 后台口令用一次性的 CI 值：这里验的是"鉴权这道闸门在不在"，
+        # 不是在验某个具体口令。生产口令由部署脚本随机生成，不进仓库。
+        env:
+          CONSOLE_AGENT_PASSWORD: ci-agent-pwd
+          CONSOLE_ADMIN_PASSWORD: ci-admin-pwd
+          # 至少 16 位：配置层对密钥有长度下限，太短会在启动时直接报错
+          CONSOLE_TOKEN_SECRET: ci-token-secret-not-a-real-one
         run: |
           uvicorn app.main:app --host 127.0.0.1 --port 8000 &
           for i in $(seq 1 30); do

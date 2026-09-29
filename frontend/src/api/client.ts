@@ -4,8 +4,18 @@
  * 例外：/api/chat/stream 是 SSE，不走信封（见 stream.ts）。
  */
 
+import { currentToken, notifyUnauthorized } from '../auth/session';
+import { CONSOLE_ERRORS } from './types';
 import type {
+  ConsoleIdentity,
+  ConsoleLoginInput,
+  ConsoleLoginResult,
   Envelope,
+  EscalationDetail,
+  EscalationReplyInput,
+  EscalationReplyResult,
+  EscalationStatus,
+  EscalationSummary,
   FeedbackInput,
   FeedbackResult,
   Metrics,
@@ -64,6 +74,11 @@ export async function request<T>(path: string, init: RequestInit = {}): Promise<
   if (init.body !== undefined && !headers.has('Content-Type')) {
     headers.set('Content-Type', 'application/json; charset=utf-8');
   }
+  // 有令牌就带上。用户端接口不需要它，带了也不影响——后端不读。
+  const token = currentToken();
+  if (token !== null && !headers.has('Authorization')) {
+    headers.set('Authorization', `Bearer ${token}`);
+  }
 
   let response: Response;
   try {
@@ -87,6 +102,18 @@ export async function request<T>(path: string, init: RequestInit = {}): Promise<
     throw new ApiError('BAD_RESPONSE', `响应不符合接口信封格式（HTTP ${response.status}）`, response.status);
   }
   if (!parsed.success) {
+    // 带着令牌还被判未授权 = 这个令牌死了（过期或被后端换了密钥）。
+    // 清掉并广播，由 AuthProvider 把人送回登录页——比让每个页面各自处理一遍好。
+    //
+    // 判据是「本次请求带了令牌」而不是「状态码是 401」：登录页口令填错也是 401，
+    // 那种情况没有令牌可清，也不该触发跳转（人本来就在登录页）。
+    if (
+      token !== null &&
+      (parsed.error.code === CONSOLE_ERRORS.unauthorized ||
+        parsed.error.code === CONSOLE_ERRORS.tokenInvalid)
+    ) {
+      notifyUnauthorized();
+    }
     throw new ApiError(parsed.error.code, parsed.error.message, response.status);
   }
   // 契约保证 data 的形状；HTTP 边界无法在运行期校验，这里显式断言给调用方
@@ -95,6 +122,19 @@ export async function request<T>(path: string, init: RequestInit = {}): Promise<
 
 /** 契约里前端用到的全部端点 */
 export const api = {
+  /** 6.1 后台登录：口令换令牌 */
+  login(body: ConsoleLoginInput): Promise<ConsoleLoginResult> {
+    return request<ConsoleLoginResult>('/api/console/login', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
+  },
+
+  /** 6.2 拿令牌换身份，用于刷新页面后恢复登录态 */
+  me(): Promise<ConsoleIdentity> {
+    return request<ConsoleIdentity>('/api/console/me');
+  },
+
   /** 1.3 会话列表（已按 updated_at 倒序） */
   async listSessions(): Promise<SessionSummary[]> {
     const data = await request<{ sessions: SessionSummary[] }>('/api/sessions');
@@ -119,5 +159,36 @@ export const api = {
   /** 3.2 满意度看板数据 */
   getMetrics(): Promise<Metrics> {
     return request<Metrics>('/api/metrics/satisfaction');
+  },
+
+  /** 2.1 人工工单队列（不传 status 则全部） */
+  async listEscalations(status?: EscalationStatus): Promise<EscalationSummary[]> {
+    const query = status === undefined ? '' : `?status=${encodeURIComponent(status)}`;
+    const data = await request<{ escalations: EscalationSummary[] }>(`/api/escalations${query}`);
+    return data.escalations;
+  },
+
+  /** 2.2 工单详情：额外带 AI 当时的完整上下文 */
+  getEscalation(escalationId: string): Promise<EscalationDetail> {
+    return request<EscalationDetail>(`/api/escalations/${encodeURIComponent(escalationId)}`);
+  },
+
+  /**
+   * 2.3 人工回复。后端把回复写进会话（前端渲染成「人工客服」气泡），
+   * 并唤醒挂起的图让 AI 接手收尾。
+   */
+  replyEscalation(escalationId: string, body: EscalationReplyInput): Promise<EscalationReplyResult> {
+    return request<EscalationReplyResult>(
+      `/api/escalations/${encodeURIComponent(escalationId)}/reply`,
+      { method: 'POST', body: JSON.stringify(body) },
+    );
+  },
+
+  /** 2.4 只标记完成、不回复 */
+  resolveEscalation(escalationId: string): Promise<EscalationReplyResult> {
+    return request<EscalationReplyResult>(
+      `/api/escalations/${encodeURIComponent(escalationId)}/resolve`,
+      { method: 'POST', body: JSON.stringify({}) },
+    );
   },
 };

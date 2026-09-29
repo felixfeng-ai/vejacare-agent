@@ -48,6 +48,74 @@ else
     echo "已有 .env，已备份并保留"
 fi
 
+# .env 与它的备份里是全部密钥（LLM key、向量库 key、后台口令），
+# 默认 umask 落盘是 644，同机其它用户可读。收紧到只有属主可读。
+chmod 600 backend/.env
+chmod 600 backend/.env.bak.* 2>/dev/null || true
+
+# 补齐后台口令。这一步不能省：上面的逻辑是「.env 存在就不动它」，
+# 所以新加的 CONSOLE_* 永远不会自己出现在服务器上——功能上线了却登不进去。
+# 只在缺失时生成，已配过的绝不覆盖（否则每次部署都把口令换掉，在线客服会被踢下线）。
+#
+# 三个键**都要探**：只看 CONSOLE_TOKEN_SECRET 的话，历史 .env 里留着密钥、
+# 两个口令却是空的，这里会判定"已配置"而不生成，结果是后台永远 503。
+if ! grep -q '^CONSOLE_TOKEN_SECRET=.\+' backend/.env \
+   || ! grep -q '^CONSOLE_AGENT_PASSWORD=.\+' backend/.env \
+   || ! grep -q '^CONSOLE_ADMIN_PASSWORD=.\+' backend/.env; then
+    if ! command -v openssl >/dev/null 2>&1; then
+        echo "❌ 缺少 openssl，无法生成后台口令；后台将保持关闭（受保护接口返回 503）"
+        exit 1
+    fi
+    # 口令用 openssl 而不是 $RANDOM：后者只有 15 位、同秒内可预测
+    _agent_pwd="$(openssl rand -base64 12 | tr -d '/+=' | cut -c1-14)"
+    _admin_pwd="$(openssl rand -base64 12 | tr -d '/+=' | cut -c1-14)"
+    _secret="$(openssl rand -hex 32)"
+
+    # 生成失败必须当场停：管道会把 openssl 的失败码吃掉（取的是 cut 的退出码），
+    # 悄悄写出一个空口令的话，后台会变成「部署成功但登不进去」，
+    # 而且要等下一次部署才会重试
+    for _v in "$_agent_pwd" "$_admin_pwd" "$_secret"; do
+        if [ ${#_v} -lt 12 ]; then
+            echo "❌ 口令生成异常（长度 ${#_v}），已中止。请检查 openssl 是否可用。"
+            exit 1
+        fi
+    done
+
+    {
+        echo ""
+        echo "# 后台口令（本次部署自动生成）"
+        echo "CONSOLE_AGENT_PASSWORD=${_agent_pwd}"
+        echo "CONSOLE_ADMIN_PASSWORD=${_admin_pwd}"
+        echo "CONSOLE_TOKEN_SECRET=${_secret}"
+        echo "CONSOLE_TOKEN_TTL_MINUTES=720"
+    } >> backend/.env
+    chmod 600 backend/.env
+
+    # 口令**不往标准输出打**。本脚本由 GitHub Actions 通过 SSH 执行，
+    # stdout 会回流进 Actions 运行日志——那是持久化、整个仓库可见的地方，
+    # 等于把后台口令贴进 CI 日志。这里只落一份属主可读的文件。
+    _cred="$HOME/.veyacare-console-credentials.txt"
+    {
+        echo "VeyaCare 后台口令（$(date '+%Y-%m-%d %H:%M:%S') 由部署脚本生成）"
+        echo ""
+        echo "客服工作台  CONSOLE_AGENT_PASSWORD = ${_agent_pwd}"
+        echo "管理看板    CONSOLE_ADMIN_PASSWORD = ${_admin_pwd}"
+        echo ""
+        echo "登录地址    https://cs.veyawork.work/login"
+        echo "这份文件由部署脚本生成，读完后请保存到密码管理器并删除它。"
+    } > "$_cred"
+    chmod 600 "$_cred"
+
+    echo ""
+    echo "后台口令已生成，写入：$_cred（仅属主可读）"
+    echo "  ⚠️  口令刻意不打印到部署日志——部署日志是持久化且仓库可见的。"
+    echo "     请 SSH 到服务器执行下面这条读取，存进密码管理器后删除该文件："
+    echo "       cat $_cred && rm $_cred"
+    echo ""
+else
+    echo "后台口令已配置，保持不变"
+fi
+
 echo "=== 3/8 后端虚拟环境 ==="
 cd "$DIR/backend"
 if [ ! -x .venv/bin/python ]; then

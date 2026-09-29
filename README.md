@@ -241,7 +241,8 @@ LangGraph 的 `interrupt()` 抛出后，**该节点已做的 state 变更全部�
 cs-agent/
 ├── backend/
 │   ├── app/
-│   │   ├── api/            chat(SSE) / sessions / escalation / feedback / health
+│   │   ├── api/            chat(SSE) / sessions / escalation / feedback / health / console(登录)
+│   │   ├── security.py     后台鉴权：口令比对、令牌签发与校验、角色依赖、登录限流
 │   │   ├── graph/          LangGraph 装配
 │   │   │   ├── builder.py      图的边与条件边
 │   │   │   ├── state.py        AgentState（TypedDict）
@@ -258,7 +259,9 @@ cs-agent/
 │   ├── scripts/            ingest.py 入库 CLI / eval.py 离线评测
 │   └── tests/              图流程 / 检索层 / 接口层
 ├── frontend/src/
-│   ├── components/         消息气泡 / 思考链 / 工具卡片 / 引用面板 / 转人工横幅 / 评价卡
+│   ├── pages/              ChatPage(公开) / LoginPage / DeskPage(客服) / AdminPage(管理员)
+│   ├── auth/               session（令牌存取与失效广播）/ AuthContext
+│   ├── components/         消息气泡 / 思考链 / 工具卡片 / 引用面板 / 转人工横幅 / 评价卡 / 后台页头 / 路由守卫
 │   ├── hooks/              chatReducer（SSE 状态机）/ useChat / useSessions
 │   └── api/                client / sse / stream / types
 └── docs/API.md             前后端接口契约
@@ -288,13 +291,33 @@ cs-agent/
 | `CHUNK_SIZE` / `CHUNK_OVERLAP` | 420 / 80 |
 | `ESCALATION_MAX_UNRESOLVED_TURNS` | 同一问题连续 N 轮未解决 → 转人工（默认 2） |
 | `ESCALATION_MAX_DISSATISFACTION` | 用户连续 N 次不满 → 转人工（默认 2） |
+| `CONSOLE_AGENT_PASSWORD` / `CONSOLE_ADMIN_PASSWORD` | 客服 / 管理员口令。两个都留空 = 后台整体关闭 |
+| `CONSOLE_TOKEN_SECRET` | 令牌签名密钥（≥16 位）。留空同样视为后台关闭 |
+| `CONSOLE_TOKEN_TTL_MINUTES` | 令牌有效期，默认 720（12 小时，够一个班次） |
+
+### 后台账号与角色
+
+后台**不是账号体系**，是两套共享口令（客服一套、管理一套），换 HMAC 签名的令牌。
+配置留空时后台整体关闭、受保护接口一律 503——**失败方向是关闭而不是放行**。
+
+| 角色 | 能进 | 口令变量 |
+|---|---|---|
+| 客服 `agent` | `/desk` 工单台（转人工的工单队列、上下文、回复、结单） | `CONSOLE_AGENT_PASSWORD` |
+| 管理员 `admin` | `/desk` + `/admin` 满意度看板（经营数据） | `CONSOLE_ADMIN_PASSWORD` |
+
+用户端（`/chat`）始终公开，且**页面上不放任何后台入口**。
+
+**已知限制**（刻意留着，不是遗漏）：口令共享 → 无法追责到具体某个人，客服署名只是缓解手段；
+令牌存 localStorage → XSS 能读走；`DELETE /api/sessions/{id}` 没有会话归属校验，
+知道 `session_id` 就能删（本项目没有用户体系，会话号即凭证）。三条都记在
+[docs/specs/001-console-auth-and-roles.md](docs/specs/001-console-auth-and-roles.md) §10。
 
 ---
 
 ## 测试
 
 ```bash
-.venv/Scripts/python -m pytest        # 62 passed（在仓库根或 backend/ 下跑都一样）
+.venv/Scripts/python -m pytest        # 109 passed（在仓库根或 backend/ 下跑都一样）
 ```
 
 > `pytest.ini` 特意放在**仓库根**而不是 `backend/` 下。配置若只存在于 `backend/`，从仓库根直接敲 `pytest` 就找不到它，`asyncio_mode` 与 loop scope 两项设置随之失效 —— session 级异步 fixture 与测试落到不同事件循环上，图与 checkpointer 的 aiosqlite 连接跨 loop 复用，转人工 resume 失效。表现是当时 52 条里 23 条报错，而代码一行没坏，排查时只能看到 `GraphInterrupt` 和「收尾回复为空」这类业务断言。
@@ -412,12 +435,13 @@ push main → GitHub Actions → SSH → /opt/veyacare/deploy/cicd-deploy.sh
 - 完整链路跑通：意图识别 → RAG → 工具调用 → 流式回复 → 满意度评估
 - 4 个真实工具（超出"至少 3 个"的要求）
 - 转人工挂起 / 恢复闭环，工单落库且上下文完整
+- **转人工有了人这一端**：客服在 `/desk` 看到工单队列与 AI 当时的完整上下文（原话、意图、槽位、工具调用、检索资料），回复后 Agent 接手收尾；管理看板在 `/admin`，两者都要口令登录，用户端不含任何后台入口
 - 离线 mock 模式，无 key 可跑通全图与全部单测
 - 前端 SSE 流式打字机 + 思考链 / 工具卡片 / 引用面板 / 转人工横幅 / 满意度评价
 - 满意度闭环（`POST /api/feedback` → 看板可见）与转人工、会话管理三条接口链路均有接口级测试
 - 100 条评测集 + 可回归的评测脚本，检索 Hit@5 100% / 要点覆盖 98%
 - Dockerfile（后端 + 前端多阶段）、docker-compose、GitHub Actions（测试 + 评测门禁 + 镜像冒烟）
-- 后端 62/62 测试通过；前端 reducer 契约 36 条断言通过；接口契约校验全项通过（本次 401 项，项数随库中会话数浮动）
+- 后端 109/109 测试通过（含 39 条鉴权用例）；前端 reducer 契约 36 条断言通过；接口契约校验全项通过（含 6 条受保护接口的未授权/越权检查，项数随库中会话数浮动）
 - **已部署上线**：香港服务器原生部署（PM2 + nginx），push 到 main 自动发布，见「部署」一节
 
 **未完成**

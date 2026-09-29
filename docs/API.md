@@ -204,3 +204,62 @@ data: {"type":"done","message_id":"m_01H...","intent":"logistics","escalated":fa
 8. **历史会话**：左侧栏列出 `/api/sessions`，可切换、可删除；本地缓存当前 `session_id`。
 9. **移动端**：≤768px 时左侧栏收起为抽屉，气泡宽度自适应。
 10. **错误态**：收到 `error` 事件时气泡内展示错误文案 + 重试按钮。
+11. **后台入口分离**：用户端页面上**不得出现**工单台与看板的任何入口；两者各自在 `/desk`、`/admin` 路由下，由守卫按角色放行。
+
+---
+
+## 6. 后台鉴权（客服工作台 / 管理看板）
+
+后台用**共享口令**换**签名令牌**，没有账号体系：口令配在环境变量（`CONSOLE_*`，见 `.env.example`），
+客服一套、管理一套。令牌是 HMAC-SHA256 签名的 `payload.signature`，前端原样存起来、原样带回来。
+
+### 6.1 `POST /api/console/login` — 口令换令牌
+
+请求体：`{ "password": "…", "name": "客服小美" }`（`name` 可选，留空则用角色名）
+
+```json
+{ "success": true, "data": {
+  "token": "eyJyb2xlIjoiYWdlbnQifQ.…", "role": "agent", "name": "客服小美", "expires_at": 1790656000
+}, "error": null }
+```
+
+`role` 只有 `agent`（客服，能办工单）与 `admin`（管理员，另可看经营看板）两种。
+`expires_at` 是 unix 秒，前端据此提前判过期，省掉一次注定 401 的请求。
+
+失败（**响应体仍是统一信封，但 HTTP 状态码是真的**，见 6.4）：
+`401 CONSOLE_BAD_PASSWORD`「访问口令不正确」——**不区分是哪个口令错**；
+`429 CONSOLE_LOGIN_LOCKED`——同一来源连续失败 5 次锁 60 秒；
+`503 CONSOLE_DISABLED`——服务端没配后台口令。
+
+### 6.2 `GET /api/console/me` — 令牌换身份
+
+`data`：`{ "role":"agent", "name":"客服小美", "expires_at":1790656000 }`（不含 `token`，也不需要）。
+前端刷新页面后用它确认本地令牌还有效——「本地没过期」不等于「后端认」。
+
+### 6.3 受保护接口
+
+| 接口 | 最低角色 |
+|------|----------|
+| `GET /api/escalations`（2.1） | 客服 |
+| `GET /api/escalations/{id}`（2.2） | 客服 |
+| `POST /api/escalations/{id}/reply`（2.3） | 客服 |
+| `POST /api/escalations/{id}/resolve`（2.4） | 客服 |
+| `GET /api/metrics/satisfaction`（3.2） | **管理员** |
+| `GET /api/console/me`（6.2） | 客服 |
+
+令牌通过请求头传递：`Authorization: Bearer <token>`。
+
+**不在表里的一律公开**——尤其是 `POST /api/feedback`（3.1）：用户提交评价不需要登录，
+别因为「它和看板在同一个 router 下」就顺手加依赖。
+
+### 6.4 状态码语义
+
+| 状态码 | `error.code` | 含义 | 前端应做 |
+|--------|--------------|------|----------|
+| 401 | `CONSOLE_UNAUTHORIZED` | 没带令牌 | 跳登录页 |
+| 401 | `CONSOLE_TOKEN_INVALID` | 令牌签名不对/已过期/格式坏 | 清掉本地令牌，跳登录页 |
+| 403 | `CONSOLE_FORBIDDEN` | 令牌有效但角色不够 | 就地提示「无权访问」，**不跳登录页** |
+| 503 | `CONSOLE_DISABLED` | 服务端未配置后台口令 | 提示联系运维配置 `CONSOLE_*`，跳登录页也没用 |
+
+这是**全项目唯一的例外**：其余接口一律 HTTP 200 + 信封表达业务错误（见 0 节）。
+鉴权必须让 401/403 真实可见——否则浏览器、代理、监控都看不出这是一次未授权访问。

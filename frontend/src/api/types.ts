@@ -304,3 +304,101 @@ export interface EscalationInfo {
   reasonLabel: string;
   ticketId: string | null;
 }
+
+/* ------------------------------------------------------------------ *
+ * 6. 人工工单（对应契约 2.1 / 2.2 / 2.3 / 2.4）
+ * ------------------------------------------------------------------ */
+
+export type EscalationStatus = 'pending' | 'resolved';
+
+/** 工单队列里的一条（契约 2.1 / 2.2 的公共部分） */
+export interface EscalationSummary {
+  id: string;
+  session_id: string;
+  reason: string;
+  reason_label: string;
+  status: EscalationStatus;
+  /** 后端生成的一句话摘要，客服扫列表时先看它 */
+  summary: string;
+  human_reply: string | null;
+  agent_name: string | null;
+  created_at: string;
+  resolved_at: string | null;
+}
+
+/**
+ * 工单上下文：AI 当时据以作答的全部依据。
+ *
+ * 客服要判断「AI 为什么没解决」，靠的就是这里——用户说了什么、识别成什么意图、
+ * 抽到哪些槽位、调了哪个工具、查到了什么。缺了它，客服只能让用户把问题重讲一遍。
+ */
+export interface EscalationContext {
+  intent?: string | null;
+  slots?: Slots | null;
+  tool_results?: Array<{ name?: string; ok?: boolean; summary?: string }> | null;
+  kb_docs?: KbDoc[] | null;
+  messages?: Array<{ role: Role; content: string; created_at: string }>;
+}
+
+export interface EscalationDetail extends EscalationSummary {
+  context: EscalationContext;
+}
+
+export interface EscalationReplyInput {
+  reply: string;
+  agent: string;
+}
+
+export interface EscalationReplyResult {
+  escalation_id: string;
+  session_id?: string;
+  status: EscalationStatus;
+  agent?: string;
+  /** 人工回复后 AI 自动补的收尾话术，客服可据此确认对话已接上 */
+  closing_message?: string;
+}
+
+/* ------------------------------------------------------------------ *
+ * 7. 后台鉴权（对应契约第 6 节）
+ * ------------------------------------------------------------------ */
+
+/** 客服能办工单，管理者另可看经营看板 */
+export type ConsoleRole = 'agent' | 'admin';
+
+export const CONSOLE_ROLE_LABELS: Record<ConsoleRole, string> = {
+  agent: '客服',
+  admin: '管理员',
+};
+
+/** POST /api/console/login 的请求体 */
+export interface ConsoleLoginInput {
+  password: string;
+  /** 客服署名，留空则用角色名 */
+  name?: string;
+}
+
+/** GET /api/console/me 的 data；登录响应的身份部分 */
+export interface ConsoleIdentity {
+  role: ConsoleRole;
+  name: string;
+  /** unix 秒 */
+  expires_at: number;
+}
+
+/** POST /api/console/login 的 data */
+export interface ConsoleLoginResult extends ConsoleIdentity {
+  token: string;
+}
+
+/**
+ * 鉴权失败的错误码。前端据此分流：前两个要清令牌跳登录页，
+ * 最后一个说明是服务端没配口令，跳登录页也没用，得在页面上讲清楚。
+ */
+export const CONSOLE_ERRORS = {
+  unauthorized: 'CONSOLE_UNAUTHORIZED',
+  tokenInvalid: 'CONSOLE_TOKEN_INVALID',
+  forbidden: 'CONSOLE_FORBIDDEN',
+  disabled: 'CONSOLE_DISABLED',
+  badPassword: 'CONSOLE_BAD_PASSWORD',
+  loginLocked: 'CONSOLE_LOGIN_LOCKED',
+} as const;

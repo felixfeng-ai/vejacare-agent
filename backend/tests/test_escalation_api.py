@@ -32,11 +32,11 @@ pytestmark = pytest.mark.asyncio
 
 # ---------------------------------------------------------------- 人工回复
 
-async def test_human_reply_is_persisted_and_ticket_resolved(client: AsyncClient):
+async def test_human_reply_is_persisted_and_ticket_resolved(client: AsyncClient, agent_client: AsyncClient):
     """人工回复走完接口后：消息落库、工单置为已解决、会话回到 active。"""
     session_id, escalation_id = await escalate(client)
 
-    resp = await client.post(
+    resp = await agent_client.post(
         f"/api/escalations/{escalation_id}/reply",
         json={"reply": "已为您加急处理，24 小时内会有物流更新", "agent": "客服小美"},
     )
@@ -61,11 +61,11 @@ async def test_human_reply_is_persisted_and_ticket_resolved(client: AsyncClient)
         session = await repository.get_session(db, session_id)
         assert session.status == "active", "会话状态没有回到 active"
 
-async def test_closing_message_is_persisted(client: AsyncClient):
+async def test_closing_message_is_persisted(client: AsyncClient, agent_client: AsyncClient):
     """Agent 的收尾回复也要落库，否则前端一刷新就只剩人工那句。"""
     session_id, escalation_id = await escalate(client)
 
-    resp = await client.post(f"/api/escalations/{escalation_id}/reply", json={"reply": "已处理"})
+    resp = await agent_client.post(f"/api/escalations/{escalation_id}/reply", json={"reply": "已处理"})
     closing = resp.json()["data"]["closing_message"]
     assert closing, "应当产出收尾回复"
 
@@ -83,28 +83,28 @@ async def test_user_message_is_persisted_before_escalation(client: AsyncClient):
         user_msgs = [m for m in messages if m.role == "user"]
         assert any(m.content == ESCALATE_MESSAGE for m in user_msgs)
 
-async def test_reply_to_missing_ticket_is_rejected(client: AsyncClient):
-    resp = await client.post("/api/escalations/esc-does-not-exist/reply", json={"reply": "你好"})
+async def test_reply_to_missing_ticket_is_rejected(client: AsyncClient, agent_client: AsyncClient):
+    resp = await agent_client.post("/api/escalations/esc-does-not-exist/reply", json={"reply": "你好"})
     body = resp.json()
     assert body["success"] is False, body
     assert body["error"]["code"] == "ESCALATION_NOT_FOUND"
 
-async def test_reply_twice_is_rejected(client: AsyncClient):
+async def test_reply_twice_is_rejected(client: AsyncClient, agent_client: AsyncClient):
     """工单被处理过就不能再回复，否则人工台会重复响应。"""
     _, escalation_id = await escalate(client)
 
-    first = await client.post(f"/api/escalations/{escalation_id}/reply", json={"reply": "第一次"})
+    first = await agent_client.post(f"/api/escalations/{escalation_id}/reply", json={"reply": "第一次"})
     assert first.json()["success"] is True
 
-    second = await client.post(f"/api/escalations/{escalation_id}/reply", json={"reply": "第二次"})
+    second = await agent_client.post(f"/api/escalations/{escalation_id}/reply", json={"reply": "第二次"})
     body = second.json()
     assert body["success"] is False, body
     assert body["error"]["code"] == "ESCALATION_ALREADY_RESOLVED"
 
-async def test_empty_reply_is_rejected(client: AsyncClient):
+async def test_empty_reply_is_rejected(client: AsyncClient, agent_client: AsyncClient):
     """空回复在校验层拦掉。"""
     _, escalation_id = await escalate(client)
-    resp = await client.post(f"/api/escalations/{escalation_id}/reply", json={"reply": ""})
+    resp = await agent_client.post(f"/api/escalations/{escalation_id}/reply", json={"reply": ""})
     assert resp.status_code == 422
 
 # ---------------------------------------------------------------- 挂起期间
@@ -123,10 +123,10 @@ async def test_ai_stays_quiet_while_awaiting_human(client: AsyncClient):
     assert error["code"] == "AWAITING_HUMAN"
     assert not any(e.get("type") == "token" for e in events), "AI 不该再产出发言"
 
-async def test_chat_resumes_after_human_handles_it(client: AsyncClient):
+async def test_chat_resumes_after_human_handles_it(client: AsyncClient, agent_client: AsyncClient):
     """人工处理完，会话回到 active，用户再说话 AI 要能正常接。"""
     session_id, escalation_id = await escalate(client)
-    await client.post(f"/api/escalations/{escalation_id}/reply", json={"reply": "已处理"})
+    await agent_client.post(f"/api/escalations/{escalation_id}/reply", json={"reply": "已处理"})
 
     resp = await client.post(
         "/api/chat/stream", json={"session_id": session_id, "message": "我的包裹到哪了？订单号 SO20260928001"}
@@ -139,11 +139,11 @@ async def test_chat_resumes_after_human_handles_it(client: AsyncClient):
 
 # ---------------------------------------------------------------- 只标记完成
 
-async def test_resolve_without_reply_is_persisted(client: AsyncClient):
+async def test_resolve_without_reply_is_persisted(client: AsyncClient, agent_client: AsyncClient):
     """「无需回复，直接标记完成」同样要落库。"""
     session_id, escalation_id = await escalate(client)
 
-    resp = await client.post(f"/api/escalations/{escalation_id}/resolve")
+    resp = await agent_client.post(f"/api/escalations/{escalation_id}/resolve")
     assert resp.json()["success"] is True
 
     async with fresh_db() as db:
@@ -155,26 +155,26 @@ async def test_resolve_without_reply_is_persisted(client: AsyncClient):
 
 # ---------------------------------------------------------------- 人工台读取
 
-async def test_pending_list_only_shows_unhandled(client: AsyncClient):
+async def test_pending_list_only_shows_unhandled(client: AsyncClient, agent_client: AsyncClient):
     """人工台的工作列表只该看到未处理的工单。"""
     _, escalation_id = await escalate(client)
 
-    pending = (await client.get("/api/escalations", params={"status": "pending"})).json()
+    pending = (await agent_client.get("/api/escalations", params={"status": "pending"})).json()
     assert pending["success"] is True
     assert escalation_id in [e["id"] for e in pending["data"]["escalations"]]
 
-    await client.post(f"/api/escalations/{escalation_id}/resolve")
+    await agent_client.post(f"/api/escalations/{escalation_id}/resolve")
 
-    after = (await client.get("/api/escalations", params={"status": "pending"})).json()
+    after = (await agent_client.get("/api/escalations", params={"status": "pending"})).json()
     assert escalation_id not in [e["id"] for e in after["data"]["escalations"]], (
         "已处理的工单不该还留在待办里"
     )
 
-async def test_ticket_detail_carries_context(client: AsyncClient):
+async def test_ticket_detail_carries_context(client: AsyncClient, agent_client: AsyncClient):
     """人工接手时要能直接看到上下文，不必让用户重述。"""
     session_id, escalation_id = await escalate(client)
 
-    detail = (await client.get(f"/api/escalations/{escalation_id}")).json()
+    detail = (await agent_client.get(f"/api/escalations/{escalation_id}")).json()
     assert detail["success"] is True
 
     data = detail["data"]

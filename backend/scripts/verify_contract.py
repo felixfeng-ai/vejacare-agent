@@ -10,17 +10,27 @@
 用法：
     python scripts/verify_contract.py                    # 默认打线上
     python scripts/verify_contract.py http://127.0.0.1:3002
+
+后台接口需要口令，从环境变量读：
+    CONSOLE_AGENT_PASSWORD=... CONSOLE_ADMIN_PASSWORD=... python scripts/verify_contract.py
+
+口令**必须**提供，不提供就直接失败退出。刻意不做"没口令就跳过鉴权检查"——
+那样一旦 CI 漏配，这一整组检查会安静地不执行，而输出看上去仍是"全部通过"。
 """
 
 from __future__ import annotations
 
 import json
+import os
 import sys
 import urllib.error
 import urllib.request
 import uuid
 
 BASE = sys.argv[1].rstrip("/") if len(sys.argv) > 1 else "https://cs.veyawork.work"
+
+AGENT_PASSWORD = os.environ.get("CONSOLE_AGENT_PASSWORD", "")
+ADMIN_PASSWORD = os.environ.get("CONSOLE_ADMIN_PASSWORD", "")
 
 PROBLEMS: list[str] = []
 CHECKS = 0
@@ -66,22 +76,30 @@ def typed(where: str, value: object, expect: type | tuple, field: str,
         fail(where, f"字段 {field!r} 类型是 {type(value).__name__}，期望 {expect}")
 
 
+def _decode(raw: bytes) -> object:
+    text = raw.decode("utf-8", "replace")
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        return text
+
+
 def request(method: str, path: str, body: dict | None = None,
-            timeout: int = 30) -> tuple[int, object]:
+            timeout: int = 30, token: str | None = None) -> tuple[int, object]:
     url = f"{BASE}{path}"
     data = json.dumps(body).encode() if body is not None else None
     req = urllib.request.Request(url, data=data, method=method)
     if data is not None:
         req.add_header("Content-Type", "application/json")
+    if token:
+        req.add_header("Authorization", f"Bearer {token}")
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
-            raw = resp.read().decode("utf-8", "replace")
-            try:
-                return resp.status, json.loads(raw)
-            except json.JSONDecodeError:
-                return resp.status, raw
+            return resp.status, _decode(resp.read())
     except urllib.error.HTTPError as exc:
-        return exc.code, exc.read().decode("utf-8", "replace")
+        # 非 2xx 也要解析成 JSON：鉴权失败返回的仍然是统一信封，
+        # 当纯文本丢掉就没法校验它的形状，而"401 的信封对不对"正是前端跳登录页的依据
+        return exc.code, _decode(exc.read())
 
 
 def stream_chat(session_id: str, message: str) -> list[dict]:
@@ -172,10 +190,85 @@ def check_events(where: str, events: list[dict]) -> None:
                     typed(where, doc.get("source"), str, f"kb.docs[{i}].source")
 
 
+# ------------------------------------------------------------------ 后台鉴权
+
+#: 受保护接口：不带令牌必须 401。逐条列出来而不是抽查一条，
+#: 因为"某个接口忘了加依赖"正是要防的事，抽查正好会漏掉它。
+GUARDED = [
+    ("GET", "/api/escalations"),
+    ("GET", "/api/escalations/verify-does-not-exist"),
+    ("POST", "/api/escalations/verify-does-not-exist/reply"),
+    ("POST", "/api/escalations/verify-does-not-exist/resolve"),
+    ("GET", "/api/metrics/satisfaction"),
+]
+
+
+def login(password: str, expect_role: str) -> str:
+    """口令换令牌。返回空串表示失败（失败已记进 PROBLEMS）。"""
+    where = f"POST /api/console/login（{expect_role}）"
+    status, body = request("POST", "/api/console/login", {"password": password})
+    check(where, status == 200, f"HTTP {status}：{body}")
+    data = check_envelope(where, body)
+    if not isinstance(data, dict):
+        return ""
+
+    typed(where, data.get("role"), str, "role")
+    typed(where, data.get("expires_at"), int, "expires_at")
+    check(where, data.get("role") == expect_role,
+          f"角色是 {data.get('role')!r}，期望 {expect_role!r}")
+    check(where, password not in json.dumps(body), "响应把口令回显出来了")
+    return str(data.get("token") or "")
+
+
+def check_console_auth() -> tuple[str, str]:
+    """校验后台鉴权，返回 (客服令牌, 管理令牌)。"""
+    print("【后台鉴权】")
+
+    # 不带令牌一律 401，且响应体仍是统一信封
+    for method, path in GUARDED:
+        where = f"{method} {path}（无令牌）"
+        status, body = request(method, path, {} if method == "POST" else None)
+        check(where, status == 401, f"无令牌却是 HTTP {status}，鉴权没有生效")
+        if status == 401:
+            check_envelope(where, body)
+            if isinstance(body, dict) and isinstance(body.get("error"), dict):
+                check(where, body["error"].get("code") == "CONSOLE_UNAUTHORIZED",
+                      f"错误码是 {body['error'].get('code')!r}")
+
+    # 乱填的令牌同样 401
+    status, _ = request("GET", "/api/escalations", token="not-a-real-token")
+    check("GET /api/escalations（伪令牌）", status == 401, f"伪令牌却是 HTTP {status}")
+
+    agent_token = login(AGENT_PASSWORD, "agent")
+    admin_token = login(ADMIN_PASSWORD, "admin")
+
+    # 跨角色：客服能办工单，看不到经营看板
+    status, body = request("GET", "/api/escalations", token=agent_token)
+    check("GET /api/escalations（客服令牌）", status == 200, f"HTTP {status}：{body}")
+
+    status, body = request("GET", "/api/metrics/satisfaction", token=agent_token)
+    check("GET /api/metrics/satisfaction（客服令牌）", status == 403,
+          f"客服看经营看板应当是 403，实际 HTTP {status}")
+
+    status, _ = request("GET", "/api/metrics/satisfaction", token=admin_token)
+    check("GET /api/metrics/satisfaction（管理令牌）", status == 200, f"HTTP {status}")
+
+    return agent_token, admin_token
+
+
 # ------------------------------------------------------------------ 主流程
 
 def main() -> int:
     print(f"目标：{BASE}\n")
+
+    if not AGENT_PASSWORD or not ADMIN_PASSWORD:
+        print("❌ 缺少后台口令环境变量，无法校验受保护接口。")
+        print("   请设置 CONSOLE_AGENT_PASSWORD 与 CONSOLE_ADMIN_PASSWORD 后重试。")
+        print("   生产口令在服务器 backend/.env 里（见 deploy/cicd-deploy.sh 的生成日志）。")
+        return 1
+
+    agent_token, admin_token = check_console_auth()
+    print()
 
     # 1. 健康检查
     status, body = request("GET", "/api/health")
@@ -223,8 +316,8 @@ def main() -> int:
                                   ("created_at", str, False), ("meta", dict, False)):
                     typed("GET messages", m.get(f), t, f"messages[{i}].{f}", nullable=nul)
 
-        # 5. 看板（本次崩的地方）
-        status, body = request("GET", "/api/metrics/satisfaction")
+        # 5. 看板（本次崩的地方）—— 需要管理令牌
+        status, body = request("GET", "/api/metrics/satisfaction", token=admin_token)
         check("GET /api/metrics/satisfaction", status == 200, f"HTTP {status}")
         data = check_envelope("GET /api/metrics/satisfaction", body)
         if isinstance(data, dict):
@@ -251,21 +344,22 @@ def main() -> int:
         if esc:
             eid = esc.get("ticket_id")
             typed("转人工", eid, str, "ticket_id")
-            status, body = request("GET", f"/api/escalations/{eid}")
+            status, body = request("GET", f"/api/escalations/{eid}", token=agent_token)
             check("GET /api/escalations/{id}", status == 200, f"HTTP {status}")
             data = check_envelope("GET /api/escalations/{id}", body)
             if isinstance(data, dict):
                 # 契约里主键叫 id，不是 escalation_id。
-                # 注意：这组 /api/escalations 接口前端 client.ts 并没有调用
-                # （是留给人工客服工作台的），这里仍然校验，防止将来接前端时踩空。
+                # 这正是客服工作台要读的形状，所以哪怕前端此刻还没接上也要校验——
+                # 工作台接上以后再发现字段对不上，就已经是"线上点开就崩"了。
                 typed("GET escalation", data.get("id"), str, "id")
                 typed("GET escalation", data.get("status"), str, "status")
                 typed("GET escalation", data.get("reason_label"), str, "reason_label")
             status, body = request("POST", f"/api/escalations/{eid}/reply",
-                                   {"reply": "已为您加急处理", "agent": "人工客服"})
-            check("POST /api/escalations/{id}/reply", status == 200, f"HTTP {status}")
+                                   {"reply": "已为您加急处理", "agent": "人工客服"},
+                                   token=agent_token)
+            check("POST /api/escalations/{id}/reply", status == 200, f"HTTP {status}：{body}")
             check_envelope("POST /api/escalations/{id}/reply", body)
-            status, body = request("POST", f"/api/escalations/{eid}/resolve", {})
+            status, body = request("POST", f"/api/escalations/{eid}/resolve", {}, token=agent_token)
             check("POST /api/escalations/{id}/resolve", status == 200, f"HTTP {status}")
             check_envelope("POST /api/escalations/{id}/resolve", body)
 
@@ -276,7 +370,7 @@ def main() -> int:
         })
         check("POST /api/feedback", status in (200, 201), f"HTTP {status}")
 
-        status, body = request("GET", "/api/metrics/satisfaction")
+        status, body = request("GET", "/api/metrics/satisfaction", token=admin_token)
         data = check_envelope("GET metrics（有评价后）", body)
         if isinstance(data, dict):
             avg = data.get("avg_rating")

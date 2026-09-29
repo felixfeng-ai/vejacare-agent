@@ -66,10 +66,12 @@ async def test_awaiting_human_is_flagged_for_polling(client: AsyncClient):
     assert data["status"] == "escalated"
 
 
-async def test_polling_stops_after_human_replies(client: AsyncClient):
+async def test_polling_stops_after_human_replies(
+    client: AsyncClient, agent_client: AsyncClient
+):
     """人工回复后标志要摘掉，否则前端会一直轮询下去。"""
     session_id, escalation_id = await escalate(client)
-    await client.post(f"/api/escalations/{escalation_id}/reply", json={"reply": "已处理"})
+    await agent_client.post(f"/api/escalations/{escalation_id}/reply", json={"reply": "已处理"})
 
     data = (await client.get(f"/api/sessions/{session_id}/messages")).json()["data"]
     assert data["awaiting_human"] is False

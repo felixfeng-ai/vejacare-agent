@@ -49,6 +49,17 @@ class EscalationReplyRequest(BaseModel):
     agent: str = Field(default="人工客服", max_length=64)
 
 
+# ---------------------------------------------------------------- 后台
+
+
+class ConsoleLoginRequest(BaseModel):
+    """后台登录。字段名是 password 而不是 code/secret——它就是一个共享口令。"""
+
+    password: str = Field(min_length=1, max_length=256)
+    #: 署名。客服回复工单时显示给用户看的名字，留空则用角色名（"客服"/"管理员"）
+    name: str = Field(default="", max_length=32)
+
+
 # ---------------------------------------------------------------- 满意度
 
 

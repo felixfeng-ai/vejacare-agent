@@ -18,11 +18,19 @@ from app.db.session import get_db, session_scope
 from app.graph.builder import get_graph, thread_config
 from app.graph.prompts import ESCALATION_REASONS
 from app.schemas import EscalationReplyRequest, fail, ok
+from app.security import ROLE_ADMIN, ROLE_AGENT, require_role
 from app.utils import to_iso
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api/escalations", tags=["escalations"])
+# 整个工单路由都归后台：队列、详情、回复、结单没有一个是给用户端用的。
+# 挂在 router 上而不是逐个函数上——四个接口的可见性是同一件事，
+# 分散写就有"新加一个接口忘了加依赖"的漏网机会。
+router = APIRouter(
+    prefix="/api/escalations",
+    tags=["escalations"],
+    dependencies=[Depends(require_role(ROLE_AGENT, ROLE_ADMIN))],
+)
 
 
 def _escalation_out(escalation, *, include_context: bool = False) -> dict:

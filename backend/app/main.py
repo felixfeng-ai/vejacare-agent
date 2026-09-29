@@ -6,11 +6,14 @@ import logging
 import sys
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
-from app.api import chat, escalation, feedback, health, sessions
+from app.api import chat, console, escalation, feedback, health, sessions
 from app.config import get_settings
+from app.schemas import fail
+from app.security import ApiHttpError
 
 logger = logging.getLogger(__name__)
 
@@ -89,11 +92,21 @@ def create_app() -> FastAPI:
         expose_headers=["X-Accel-Buffering"],
     )
 
+    @app.exception_handler(ApiHttpError)
+    async def _api_http_error(_: Request, exc: ApiHttpError) -> JSONResponse:
+        """鉴权失败走真 HTTP 状态码，但响应体仍是统一信封。
+
+        两件事都要：状态码对了，前端的 401 拦截器才能把用户弹去登录页，
+        网关与监控也才看得见"有人在撞后台"；信封对了，前端解包逻辑就只有一套。
+        """
+        return JSONResponse(status_code=exc.status_code, content=fail(exc.code, exc.message))
+
     app.include_router(health.router)
     app.include_router(chat.router)
     app.include_router(sessions.router)
     app.include_router(escalation.router)
     app.include_router(feedback.router)
+    app.include_router(console.router)
 
     @app.get("/", include_in_schema=False)
     async def root() -> dict:

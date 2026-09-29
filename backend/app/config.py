@@ -75,6 +75,23 @@ class Settings(BaseSettings):
     escalation_max_unresolved_turns: int = 2
     escalation_max_dissatisfaction: int = 2
 
+    # ---------- 后台（客服工作台 / 管理看板）----------
+    # 口令留空 = 后台整体关闭（受保护接口一律 503），而不是「没配口令就放行」。
+    # 这是刻意选的失败方向：漏配口令导致后台登不进去，是运维看得见、当场能改的问题；
+    # 而漏配导致工单队列敞开，是没人会发现的泄露——工单详情里带着用户对话原文。
+    # 模板里也不留默认口令，生产口令由部署脚本随机生成（见 deploy/cicd-deploy.sh）。
+    console_agent_password: str = ""
+    console_admin_password: str = ""
+    #: 令牌签名密钥。留空同样视为后台未启用。
+    #: 长度下限 16：密钥是签名方案唯一的安全边界，太短就能被离线爆破出伪造令牌。
+    #: 下限写在这里而不是运行时判，是为了让误配在启动时就炸出来（fail fast）。
+    #: 空串是「未启用」的合法写法，不受下限约束（校验器不校验默认值）。
+    console_token_secret: str = Field(default="", min_length=16)
+    #: 令牌有效期（分钟）。默认 12 小时：够一个班次，又不至于长期有效。
+    #: 下限写在这里而不是在签发函数里：配置错误该在启动时就报出来（fail fast），
+    #: 签发函数则保持老实——给它一个负数就该签出一个已过期的令牌，而不是偷偷改成 1 分钟
+    console_token_ttl_minutes: int = Field(default=720, ge=1)
+
     # ---------- 派生属性 ----------
     @property
     def cors_origin_list(self) -> list[str]:
@@ -93,6 +110,15 @@ class Settings(BaseSettings):
     def is_offline(self) -> bool:
         """离线模式：LLM 与 Embedding 都不需要外网。"""
         return self.is_mock_llm and self.embedding_provider.lower() == "hashing"
+
+    @property
+    def console_enabled(self) -> bool:
+        """后台是否可用：至少要有一个口令，且配了签名密钥。
+
+        没密钥就签不出令牌，没口令就没法登录——两者缺一，后台都不该放行。
+        """
+        has_password = bool(self.console_agent_password or self.console_admin_password)
+        return has_password and bool(self.console_token_secret)
 
     @field_validator("*", mode="before")
     @classmethod
