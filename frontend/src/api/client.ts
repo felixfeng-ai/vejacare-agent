@@ -174,8 +174,11 @@ export const api = {
   },
 
   /**
-   * 2.3 人工回复。后端把回复写进会话（前端渲染成「人工客服」气泡），
-   * 并唤醒挂起的图让 AI 接手收尾。
+   * 2.3 人工回复。后端把回复写进会话（前端渲染成「人工客服」气泡）。
+   *
+   * **回一句不等于办完了**：工单仍是 pending，用户端仍在等人工、AI 仍不插话。
+   * 客服可以连说几句，直到调 `closeEscalation` 结单。以前这两件事绑在一起，
+   * 客服说一句「稍等，我查询下」就把工单关掉了。
    */
   replyEscalation(escalationId: string, body: EscalationReplyInput): Promise<EscalationReplyResult> {
     return request<EscalationReplyResult>(
@@ -184,10 +187,15 @@ export const api = {
     );
   },
 
-  /** 2.4 只标记完成、不回复 */
-  resolveEscalation(escalationId: string): Promise<EscalationReplyResult> {
+  /**
+   * 2.4 结束会话：工单结单，用户端解锁，并补一句确定性的收尾文案。
+   *
+   * 没回复过就直接结单，也是走这条（收尾文案为空）。后端的 `/resolve` 是同一段实现，
+   * 但这里不再包一层——两条路做同一件事，界面只会用到一条，多出来的那条是死代码。
+   */
+  closeEscalation(escalationId: string): Promise<EscalationReplyResult> {
     return request<EscalationReplyResult>(
-      `/api/escalations/${encodeURIComponent(escalationId)}/resolve`,
+      `/api/escalations/${encodeURIComponent(escalationId)}/close`,
       { method: 'POST', body: JSON.stringify({}) },
     );
   },

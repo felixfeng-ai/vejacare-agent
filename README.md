@@ -177,6 +177,11 @@ LangGraph 的 `interrupt()` 抛出后，**该节点已做的 state 变更全部�
 
 工单创建另有幂等保护（`get_pending_escalation`），因为 resume 会重跑 `escalation_notice`。
 
+`escalation_wait` resume 之后去的是 `feedback`，**刻意绕开 `responder`**。人工说完就算说完了，
+模型此刻没有任何信息可生成，唯一的产出是把人工那句话复读一遍——实测人工说「稍等，我查询下」，
+AI 收尾原样抄了一遍。收尾文案改由 `/close` 接口按模板拼，确定性产出。
+详见 [docs/specs/002-human-handoff-lifecycle.md](docs/specs/002-human-handoff-lifecycle.md)。
+
 ### 3. RAG 是「向量 + BM25 → RRF → Reranker」的组合拳
 
 - **纯向量**：能匹配"退款要多久" ↔ "退款到账时间"，但对订单号、`DDP` 这类专有名词不敏感
@@ -312,12 +317,47 @@ cs-agent/
 知道 `session_id` 就能删（本项目没有用户体系，会话号即凭证）。三条都记在
 [docs/specs/001-console-auth-and-roles.md](docs/specs/001-console-auth-and-roles.md) §10。
 
+#### 生产口令从哪来（这里刻意不写口令本身）
+
+`.env.example` 里这三项留空、模板里不留任何默认口令，生产口令由
+[deploy/cicd-deploy.sh](deploy/cicd-deploy.sh) **首次部署时随机生成**，不经过任何人的手：
+
+```
+openssl rand -base64 12  →  14 位客服/管理口令
+openssl rand -hex 32     →  签名密钥
+```
+
+生成后只落两个地方，都是 `chmod 600`（仅属主可读）：
+
+| 位置 | 用途 |
+|---|---|
+| 服务器 `backend/.env` | 服务启动时读取 |
+| 服务器 `~/.veyacare-console-credentials.txt` | 给人看，登录时来这里取 |
+
+**口令不进仓库，也不进部署日志。** 部署脚本明明能直接 `echo` 出来却选择写文件，
+README 这一节同样只写「去哪取」不写「是什么」——原因一样，而且对 README 更硬：
+**这个仓库是公开的**，README 里的一行字会随提交进入 git 历史，删掉之后历史里还在，
+fork 和爬虫也早就抄走了。后台队列里是用户的对话原文，看板是经营数据，
+这两样东西不该由一份公开文档来守门。
+
+取口令：
+
+```bash
+ssh <服务器> 'cat ~/.veyacare-console-credentials.txt'
+```
+
+轮换：改服务器 `backend/.env` 里的 `CONSOLE_*` 三项后重启服务即可，没有别的状态要同步
+（令牌是签名制的，换密钥等于让所有已发出的令牌立刻失效——这也是唯一的「踢人下线」手段）。
+
+> 本机开发想开后台，随便给三个值就行，不用去线上偷：
+> `CONSOLE_AGENT_PASSWORD=dev-agent CONSOLE_ADMIN_PASSWORD=dev-admin CONSOLE_TOKEN_SECRET=$(openssl rand -hex 32)`
+
 ---
 
 ## 测试
 
 ```bash
-.venv/Scripts/python -m pytest        # 109 passed（在仓库根或 backend/ 下跑都一样）
+.venv/Scripts/python -m pytest        # 127 passed（在仓库根或 backend/ 下跑都一样）
 ```
 
 > `pytest.ini` 特意放在**仓库根**而不是 `backend/` 下。配置若只存在于 `backend/`，从仓库根直接敲 `pytest` 就找不到它，`asyncio_mode` 与 loop scope 两项设置随之失效 —— session 级异步 fixture 与测试落到不同事件循环上，图与 checkpointer 的 aiosqlite 连接跨 loop 复用，转人工 resume 失效。表现是当时 52 条里 23 条报错，而代码一行没坏，排查时只能看到 `GraphInterrupt` 和「收尾回复为空」这类业务断言。
@@ -332,7 +372,7 @@ cs-agent/
 - 查不到的订单**如实说查不到**
 - 退货运费来自工具计算，不是模型臆测
 - **失效文档永远检索不到**
-- 转人工：挂起 / 工单幂等（interrupt 重跑不建两张单）/ 人工回复后 resume 收尾
+- 转人工：挂起 / 工单幂等（interrupt 重跑不建两张单）/ 回复与结单分离 / 结单后 resume 且 AI 不复读
 - 多轮上下文保留；评分邀请不跨轮残留
 - 纯政策问题不借用上一轮的订单号 —— 拿真数据答错题比查不到更糟
 
@@ -353,8 +393,8 @@ cs-agent/
 **接口层（29 条）** —— 断言一律「开一个全新的数据库会话去读」，只认真提交过的数据，因此能抓到「接口报成功、数据其实没落库」这类光看返回值发现不了的问题：
 
 - `test_feedback.py` —— 评价提交后看板真的看得到（含低分告警分支）、均分跟着变、会话意图带进看板、越界评分与超长备注在校验层被拒、自动解决率与计数自洽
-- `test_escalation_api.py` —— 走真实对话接口触发转人工 → 人工回复落库、工单置为已解决、会话回到 active；挂起期间 AI 不许抢答；处理完能正常恢复对话；工单不能重复回复
-- `test_sessions_api.py` —— 会话列表与消息读取、`awaiting_human` 轮询契约随人工回复正确开关、删除真的删掉且不留下孤儿消息/工单、不误删其它会话
+- `test_escalation_api.py` —— 走真实对话接口触发转人工 → 人工回复落库但**工单仍待处理**、可以连回几次、结单后才置为已解决且会话回到 active；挂起期间 AI 不许抢答、用户补的话不丢且计入未读；收尾文案不是人工回复的复读；处理完能正常恢复对话；结单后不能再回复
+- `test_sessions_api.py` —— 会话列表与消息读取、`awaiting_human` 轮询契约随**结单**（而非回复）开关、删除真的删掉且不留下孤儿消息/工单、不误删其它会话
 
 前端另有一份契约校验，把 `docs/API.md §1.1` 的 SSE 示例原样喂给 reducer：
 
@@ -435,13 +475,13 @@ push main → GitHub Actions → SSH → /opt/veyacare/deploy/cicd-deploy.sh
 - 完整链路跑通：意图识别 → RAG → 工具调用 → 流式回复 → 满意度评估
 - 4 个真实工具（超出"至少 3 个"的要求）
 - 转人工挂起 / 恢复闭环，工单落库且上下文完整
-- **转人工有了人这一端**：客服在 `/desk` 看到工单队列与 AI 当时的完整上下文（原话、意图、槽位、工具调用、检索资料），回复后 Agent 接手收尾；管理看板在 `/admin`，两者都要口令登录，用户端不含任何后台入口
+- **转人工有了人这一端**：客服在 `/desk` 看到工单队列与 AI 当时的完整上下文（原话、意图、槽位、工具调用、检索资料），可以分几次回复，办完点「结束会话」才交还 AI；工单带未读数，用户在等待期间补的话不会丢；管理看板在 `/admin`，两者都要口令登录，用户端不含任何后台入口
 - 离线 mock 模式，无 key 可跑通全图与全部单测
 - 前端 SSE 流式打字机 + 思考链 / 工具卡片 / 引用面板 / 转人工横幅 / 满意度评价
 - 满意度闭环（`POST /api/feedback` → 看板可见）与转人工、会话管理三条接口链路均有接口级测试
 - 100 条评测集 + 可回归的评测脚本，检索 Hit@5 100% / 要点覆盖 98%
 - Dockerfile（后端 + 前端多阶段）、docker-compose、GitHub Actions（测试 + 评测门禁 + 镜像冒烟）
-- 后端 109/109 测试通过（含 39 条鉴权用例）；前端 reducer 契约 36 条断言通过；接口契约校验全项通过（含 6 条受保护接口的未授权/越权检查，项数随库中会话数浮动）
+- 后端 127/127 测试通过（含 36 条鉴权用例）；前端 reducer 契约 36 条断言通过；接口契约校验全项通过（含 7 条受保护接口的未授权/越权检查，项数随库中会话数浮动）
 - **已部署上线**：香港服务器原生部署（PM2 + nginx），push 到 main 自动发布，见「部署」一节
 
 **未完成**

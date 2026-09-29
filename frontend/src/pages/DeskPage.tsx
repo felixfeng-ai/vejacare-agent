@@ -14,7 +14,7 @@
  * 结果就是客服的工作台出现在用户眼前。既然有了路由，就该是一整页。
  */
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 import ConsoleHeader from '../components/ConsoleHeader';
 import { useAuth } from '../auth/AuthContext';
@@ -82,69 +82,82 @@ export default function DeskPage() {
     void loadList();
   }, [loadList]);
 
+  /**
+   * 拉工单详情。队列和详情是两份数据，回复、结单之后两份都得刷新：
+   * 只刷队列的话，客服刚发出去的那句话在自己的对话记录里看不见——
+   * 界面显示「已回复」而线程里没有，客服只能怀疑是不是没发出去。
+   */
+  const detailSeqRef = useRef(0);
+
+  const loadDetail = useCallback(async (id: string): Promise<void> => {
+    detailSeqRef.current += 1;
+    const seq = detailSeqRef.current;
+    setDetailLoading(true);
+    try {
+      const data = await api.getEscalation(id);
+      if (seq !== detailSeqRef.current) return; // 已经发起了更新的一次请求
+      setDetail(data);
+      setError(null);
+    } catch (err) {
+      if (seq !== detailSeqRef.current) return;
+      setError(userMessageOf(err));
+    } finally {
+      if (seq === detailSeqRef.current) setDetailLoading(false);
+    }
+  }, []);
+
   // 换选中项就拉详情，上下文只有详情接口才返回
   useEffect(() => {
     if (selectedId === null) {
       setDetail(null);
       return;
     }
-    let cancelled = false;
-    setDetailLoading(true);
-    void (async () => {
-      try {
-        const data = await api.getEscalation(selectedId);
-        if (!cancelled) {
-          setDetail(data);
-          setError(null);
-        }
-      } catch (err) {
-        if (!cancelled) setError(userMessageOf(err));
-      } finally {
-        if (!cancelled) setDetailLoading(false);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [selectedId]);
+    void loadDetail(selectedId);
+  }, [selectedId, loadDetail]);
 
+  /** 发一句话给用户。**工单不结**——人工可以接着说，直到他自己点「结束会话」。 */
   const handleReply = useCallback(async (): Promise<void> => {
     if (detail === null || reply.trim().length === 0) return;
     setBusy(true);
     try {
-      const result = await api.replyEscalation(detail.id, {
+      await api.replyEscalation(detail.id, {
         reply: reply.trim(),
         agent: agent.trim() === '' ? name : agent.trim(),
       });
       setReply('');
-      setDone(
-        result.closing_message
-          ? `已回复，AI 已接手收尾：${result.closing_message}`
-          : '已回复，用户端可以继续对话了',
-      );
+      setDone('已发出。会话仍在人工处理中，用户端还等着你结束会话。');
       setError(null);
-      await loadList();
+      await Promise.all([loadList(), loadDetail(detail.id)]);
     } catch (err) {
       setError(userMessageOf(err));
     } finally {
       setBusy(false);
     }
-  }, [agent, detail, loadList, name, reply]);
+  }, [agent, detail, loadDetail, loadList, name, reply]);
 
-  const handleResolve = useCallback(async (): Promise<void> => {
+  /**
+   * 结束会话：结单、用户端解锁、AI 补一句收尾。
+   *
+   * 收尾那句话由后端按模板拼，不是 AI 生成的——人工说完就说完了，模型没有信息可生成。
+   */
+  const handleClose = useCallback(async (): Promise<void> => {
     if (detail === null) return;
     setBusy(true);
     try {
-      await api.resolveEscalation(detail.id);
-      setDone('已标记完成');
+      const result = await api.closeEscalation(detail.id);
+      setDone(
+        result.closing_message
+          ? `已结束会话，用户端收到：「${result.closing_message}」`
+          : '已结束会话，用户端可以继续对话了',
+      );
       setError(null);
-      await loadList();
+      await Promise.all([loadList(), loadDetail(detail.id)]);
     } catch (err) {
       setError(userMessageOf(err));
     } finally {
       setBusy(false);
     }
-  }, [detail, loadList]);
+  }, [detail, loadDetail, loadList]);
 
   const pending = list.filter((row) => row.status === 'pending').length;
 
@@ -189,6 +202,10 @@ export default function DeskPage() {
                     <span className={`desk__tag desk__tag--${row.status}`}>
                       {row.status === 'pending' ? '待处理' : '已处理'}
                     </span>
+                    {/* 用户在你处理期间又补了话。没有这个标，客服不主动刷新就以为对方在干等 */}
+                    {row.status === 'pending' && row.unread_count > 0 && (
+                      <span className="desk__unread">{row.unread_count} 条新消息</span>
+                    )}
                     <span className="desk__time">{formatTime(row.created_at)}</span>
                   </span>
                   <span className="desk__item-title">{row.summary || row.reason_label}</span>
@@ -245,6 +262,12 @@ export default function DeskPage() {
                 )}
 
                 <h3 className="desk__sub-title">对话记录</h3>
+                {detail.status === 'pending' && detail.unread_count > 0 && (
+                  <p className="desk__note">
+                    用户在你接手后又说了 {detail.unread_count} 句，都在下面——
+                    等待期间 AI 不答话，但话都替用户留着。
+                  </p>
+                )}
                 <div className="desk__thread">
                   {(detail.context.messages ?? []).length === 0 && (
                     <p className="page__hint">没有取到对话记录</p>
@@ -287,9 +310,13 @@ export default function DeskPage() {
                       value={reply}
                       maxLength={4000}
                       rows={3}
-                      placeholder="写清处理结论或下一步，发出后会以「人工客服」身份进入对话，AI 随后补一句收尾"
+                      placeholder="写清处理结论或下一步，以「人工客服」身份进入对话。可以分几次说，说完再点「结束会话」"
                       onChange={(event) => setReply(event.target.value)}
                     />
+                    <p className="desk__note">
+                      发送回复只是说一句话，会话仍在你手上（AI 不会插话）。
+                      办完了点「结束会话」，用户端才会解锁。
+                    </p>
                     <div className="desk__actions">
                       <button
                         type="button"
@@ -302,10 +329,10 @@ export default function DeskPage() {
                       <button
                         type="button"
                         className="btn btn--ghost btn--sm"
-                        onClick={() => void handleResolve()}
+                        onClick={() => void handleClose()}
                         disabled={busy}
                       >
-                        无需回复，直接完成
+                        结束会话
                       </button>
                     </div>
                   </div>

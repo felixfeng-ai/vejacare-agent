@@ -45,6 +45,11 @@ backend/data/index/
 INTERVIEW-NOTES.md
 面试*.md
 
+# 生产后台口令的本地副本。放在工作区是为了随手可得，但它和 backend/.env 是同一等级的
+# 机密——README 里只写了「去哪取」没写值，就是为了不把口令送进公开仓库的 git 历史。
+# 这条规则别删：一旦漏提交，口令就得整套轮换（换 CONSOLE_TOKEN_SECRET 会让所有令牌失效）。
+.console-credentials.local
+
 # ---------------------------------------------------------------- 崩溃转储与系统垃圾
 # Git Bash 在这台机器上崩过几次，会掉下这些文件
 *.stackdump

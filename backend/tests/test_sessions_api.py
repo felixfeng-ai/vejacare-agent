@@ -66,12 +66,27 @@ async def test_awaiting_human_is_flagged_for_polling(client: AsyncClient):
     assert data["status"] == "escalated"
 
 
-async def test_polling_stops_after_human_replies(
-    client: AsyncClient, agent_client: AsyncClient
-):
-    """人工回复后标志要摘掉，否则前端会一直轮询下去。"""
+async def test_still_awaiting_human_after_a_reply(client: AsyncClient, agent_client: AsyncClient):
+    """人工回了一句但没结单：会话仍算「在等人工」。
+
+    这条守卫的是拆分之后的语义。「人工回复」不再等于「处理完毕」——人工可以连说几句，
+    在人工自己点「结束会话」之前，AI 都该继续闭嘴、前端都该继续轮询同步新消息。
+    以前这里是反过来的：回一句就把标志摘掉、会话回 active，人工后面再说什么都没人收。
+    """
+    session_id, escalation_id = await escalate(client)
+    await agent_client.post(f"/api/escalations/{escalation_id}/reply", json={"reply": "稍等，我查询下"})
+
+    data = (await client.get(f"/api/sessions/{session_id}/messages")).json()["data"]
+    assert data["awaiting_human"] is True, "还没结单，仍应在等人工"
+    assert data["escalation_id"] == escalation_id
+    assert data["status"] == "escalated"
+
+
+async def test_awaiting_human_clears_after_close(client: AsyncClient, agent_client: AsyncClient):
+    """结单后标志才摘掉——前端据此停止轮询、解锁输入。"""
     session_id, escalation_id = await escalate(client)
     await agent_client.post(f"/api/escalations/{escalation_id}/reply", json={"reply": "已处理"})
+    await agent_client.post(f"/api/escalations/{escalation_id}/close")
 
     data = (await client.get(f"/api/sessions/{session_id}/messages")).json()["data"]
     assert data["awaiting_human"] is False

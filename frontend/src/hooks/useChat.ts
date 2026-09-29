@@ -304,7 +304,17 @@ export function useChat(): UseChatResult {
     if (stored !== null) void loadHistory(stored);
   }, [loadHistory]);
 
-  const escalationActive = state.escalation !== null && !state.humanAgentReplied;
+  // 输入锁：人工还没接手之前锁住输入。这段时间用户说什么 AI 都不会答，
+  // 让他打完一句再收到「请稍候」不如干脆先锁上。
+  const inputLocked = state.escalation !== null && !state.humanAgentReplied;
+
+  // 轮询：只要服务端还认为这个会话在等人工，就继续同步历史。
+  //
+  // **不能**再用「历史里出现过 human_agent 消息」来停表。人工回复和结单拆开之后，
+  // 人工可以连说几句（「稍等，我查询下」→「查到了，明天到」），而第一条一到
+  // humanAgentReplied 就变 true、轮询立刻停表——后面的话用户永远看不到。
+  // 判断依据必须是服务端的会话状态，它在结单时才回到 active。
+  const escalationActive = inputLocked || state.status === 'escalated';
 
   // 转人工后轮询历史，感知人工客服回复（契约 5.6）
   useEffect(() => {
@@ -352,7 +362,7 @@ export function useChat(): UseChatResult {
     escalation: state.escalation,
     escalationActive,
     feedback: state.feedback,
-    inputLocked: escalationActive,
+    inputLocked,
     send,
     retry,
     submitFeedback,

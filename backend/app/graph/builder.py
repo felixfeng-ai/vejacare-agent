@@ -20,7 +20,11 @@
                  escalation_notice                                     │
                         │                                              └──(待用户补充)──► END
                         ▼
-                 escalation_wait ──(人工回复后 resume)──► responder
+                 escalation_wait ──(结单后 resume)──► feedback ──► END
+
+转人工那条路刻意**不回到 responder**：人工已经把话说完了，再由 LLM 生成一句「收尾」
+没有任何信息可生成，产出必然是复读人工的原话（实测过）。收尾文案由 /close 接口
+确定性拼装，图这边只负责把挂起的 checkpoint 解开、并保留满意度邀请。
 """
 
 from __future__ import annotations
@@ -91,7 +95,8 @@ def build_graph(checkpointer=None):
 
     # 转人工：notice 正常返回（消息落库）→ wait 挂起 → 人工回复后 resume 继续
     builder.add_edge("escalation_notice", "escalation_wait")
-    builder.add_edge("escalation_wait", "responder")
+    # 结单后直接去 feedback，绕开 responder —— 见文件头「刻意不回到 responder」
+    builder.add_edge("escalation_wait", "feedback")
     builder.add_edge("feedback", END)
 
     return builder.compile(checkpointer=checkpointer)

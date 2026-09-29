@@ -44,13 +44,21 @@ async def chat_stream(payload: ChatRequest, request: Request) -> EventSourceResp
             async with session_scope() as db:
                 session = await repository.ensure_session(db, session_id, user_text)
 
-                # 已转人工且人工还没接手时，不让 AI 继续插话，避免和人工客服抢答
+                # 已转人工、人工还没结单时，不让 AI 继续插话，避免和人工客服抢答。
+                #
+                # 但这句话**必须先落库**再返回提示。以前这里在 add_message 之前就 return 了，
+                # 于是用户在等待期间补的订单号、地址、具体诉求既不进对话记录也不进工单，
+                # 直接消失——又一个「接口正常返回、数据其实没落库」。而客服端正是靠这条
+                # 消息才知道用户又说话了（工单列表的 unread_count），丢了它客服永远看不到。
                 if session.status == "escalated":
+                    await repository.add_message(
+                        db, session_id=session_id, role="user", content=user_text
+                    )
                     yield _sse(
                         {
                             "type": "error",
                             "code": "AWAITING_HUMAN",
-                            "message": "已为您转接人工客服，请稍候，人工同事马上就来。",
+                            "message": "已收到，正在转达人工客服。人工回复后即可继续对话。",
                         }
                     )
                     yield _sse({"type": "done", "message_id": "", "escalated": True})

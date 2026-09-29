@@ -32,6 +32,13 @@ def _last_ai_text(state: dict) -> str:
     return ""
 
 
+def _ai_count(state: dict) -> int:
+    """数 AI 消息条数。用来判断某一轮**有没有新增** AI 发言，比看最后一条可靠。"""
+    from langchain_core.messages import AIMessage
+
+    return len([m for m in state.get("messages") or [] if isinstance(m, AIMessage)])
+
+
 # ---------------------------------------------------------------- 主链路
 
 
@@ -175,12 +182,13 @@ async def test_escalation_create_is_idempotent(graph, thread_config):
 
 
 async def test_resume_after_human_reply(graph, thread_config):
-    """人工回复后 resume，Agent 接手做收尾，数据不丢。"""
+    """结单后 resume：挂起被解开、人工回复进入状态、并且邀请用户评分。"""
     session_id = f"t-{uuid.uuid4().hex[:8]}"
     config = thread_config(session_id)
 
     state = await _run(graph, config, "我要人工客服")
     escalation_id = state["escalation_id"]
+    ai_before = _ai_count(state)
 
     human_reply = "已为您加急处理，24 小时内会有物流更新"
     resumed = await graph.ainvoke(
@@ -191,18 +199,21 @@ async def test_resume_after_human_reply(graph, thread_config):
     assert resumed["awaiting_human"] is False
     assert resumed["escalated"] is False
     assert resumed["human_reply"] == human_reply
+    assert escalation_id
 
-    # Agent 产出了收尾回复
-    assert _last_ai_text(resumed).strip()
+    # 结单后仍然要请用户评分，否则 /admin 的满意度看板会漏掉所有转人工的会话
+    assert resumed["request_feedback"] is True
 
-    # 人工回复被注入成了 SystemMessage，而不是被当作用户发言
+    # **不再由 LLM 产出收尾**：人工已经说完，模型没有信息可生成，产出必然是复读
+    # （实测人工说「稍等，我查询下」，AI 收尾把这句原样抄了一遍）。
+    # 比的是"有没有新增"，不是"最后一条是不是空"——最后一条 AI 消息是更早那句
+    # 「已为您转接人工客服」的通知，它本来就该留着。
+    assert _ai_count(resumed) == ai_before, "resume 不该再产出任何 AI 消息，复读的源头就是它"
+
+    # 也不该再往 state 里注入"人工说了什么"的 SystemMessage —— 那正是复读的来源
     from langchain_core.messages import SystemMessage
 
-    system_texts = [
-        m.content for m in resumed["messages"] if isinstance(m, SystemMessage)
-    ]
-    assert any(human_reply in str(t) for t in system_texts)
-    assert escalation_id
+    assert not [m for m in resumed["messages"] if isinstance(m, SystemMessage)]
 
 
 # ---------------------------------------------------------------- 多轮
@@ -276,3 +287,40 @@ async def test_policy_question_does_not_borrow_previous_order(graph, thread_conf
     reply = _last_ai_text(second)
     assert "SO20260928001" not in reply
     assert "4.99" not in reply, "这个数字只可能来自上一单的退货运费表"
+
+
+async def test_followup_after_a_ticket_does_not_inherit_the_handoff(graph, thread_config):
+    """上一轮要过人工，不代表这一轮还要人工。
+
+    线上实测：用户先要过真人客服，工单结掉之后接着问「平台的退换货政策是怎样的」，
+    AI 答完，用户追了一句「再详细点」——这一句被判成 human_agent，AI 当场闭嘴转人工。
+
+    这句话里没有半个字提到人工。判成转人工是因为意图分类会看上文，而看上文时
+    只看不筛：上一轮的「真人客服」被原样顺延到这一轮。**追问继承的是主题，不是诉求**——
+    诉求是那一轮的事，说完了就完了。
+
+    两处都得对才守得住：提示词里的规则（真模型走这条）、桩里的规则（测试走这条）。
+    """
+    session_id = f"t-{uuid.uuid4().hex[:8]}"
+    config = thread_config(session_id)
+
+    # 1. 先要一次人工，再把工单结掉
+    first = await _run(graph, config, "我要转人工，找你们真人客服")
+    assert first["intent"] == "human_agent"
+    await graph.ainvoke(Command(resume={"reply": "已处理", "agent": "客服小美"}), config)
+
+    # 2. 结单后接着问政策
+    policy = await _run(graph, config, "当前平台的退换货政策是什么，什么商品允许退换货")
+    assert policy["intent"] == "return_refund"
+
+    # 3. 追问。这句必须接上「退换货」这个主题
+    followup = await _run(graph, config, "再详细点")
+
+    assert followup["intent"] != "human_agent", "追问不该继承上一轮的转人工诉求"
+    assert followup["intent"] == "return_refund", "追问该接上刚聊完的那个主题"
+    assert followup["escalated"] is False
+    assert followup["awaiting_human"] is False
+
+    # 也不能退化成 chitchat —— 那会绕开知识库，AI 只能凭空作答
+    assert followup["kb_docs"], "追问判成闲聊就查不到知识库了"
+    assert _last_ai_text(followup).strip()

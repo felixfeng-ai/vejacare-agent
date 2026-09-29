@@ -1123,7 +1123,9 @@ input {
   display: flex;
   gap: 8px;
   align-items: center;
-  justify-content: space-between;
+  /* 左对齐 + 时间自己顶到右边。用 space-between 的话，中间多一个「新消息」标
+     就会把三个元素摊成等间距，标签和它的说明被拆散 */
+  justify-content: flex-start;
 }
 
 .desk__tag {
@@ -1143,7 +1145,25 @@ input {
 }
 
 .desk__time {
+  margin-left: auto;
   font-size: 11px;
+  color: var(--text-muted);
+}
+
+/* 「用户又说话了」。用主色而不是警告色：这不是异常，是客服该接着办的事 */
+.desk__unread {
+  padding: 1px 6px;
+  font-size: 11px;
+  border-radius: 999px;
+  color: var(--primary);
+  background: var(--primary-weak);
+}
+
+/* 说明性文字：讲清楚这一步做了什么、下一步该点什么 */
+.desk__note {
+  margin: 6px 0 0;
+  font-size: 12px;
+  line-height: 1.6;
   color: var(--text-muted);
 }
 

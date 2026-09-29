@@ -18,7 +18,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from langchain_core.messages import AIMessage, SystemMessage
+from langchain_core.messages import AIMessage
 
 from langgraph.types import interrupt
 
@@ -37,8 +37,14 @@ from app.utils import truncate
 logger = logging.getLogger(__name__)
 
 
-def _build_summary(state: AgentState) -> str:
-    """给人工客服看的一句话摘要：用户要什么 + AI 卡在哪。"""
+def _build_summary(state: AgentState, reason: str) -> str:
+    """给人工客服看的一句话摘要：用户要什么 + AI 卡在哪。
+
+    `reason` 由调用方传进来，且必须是**已经兜底过**的那个值。这里原来自己读
+    state 里的 `escalation_reason`，而落库走的是 `or "user_requested"` 的结果——
+    建单那一刻 state 里是空的，于是同一张工单详情写着「用户主动要求人工」、
+    摘要却写着「触发原因：未明确」，两处对不上。
+    """
     intent = state.get("intent", "")
     slots = state.get("slots") or {}
     tool_summaries = [t.get("summary", "") for t in (state.get("tool_results") or [])]
@@ -48,7 +54,7 @@ def _build_summary(state: AgentState) -> str:
         parts.append(f"订单号：{slots['order_no']}")
     if tool_summaries:
         parts.append(f"已查到：{truncate(tool_summaries[0], 80)}")
-    parts.append(f"触发原因：{ESCALATION_REASONS.get(state.get('escalation_reason', ''), '未明确')}")
+    parts.append(f"触发原因：{ESCALATION_REASONS.get(reason, '未明确')}")
     return "；".join(parts)
 
 
@@ -91,7 +97,7 @@ async def escalation_notice(state: AgentState) -> dict:
                 db,
                 session_id=session_id,
                 reason=reason,
-                summary=_build_summary(state),
+                summary=_build_summary(state, reason),
                 context=_build_context(state),
             )
             escalation_id = escalation.id
@@ -135,25 +141,27 @@ async def escalation_wait(state: AgentState) -> dict:
         }
     )
 
-    # resume 可以传字符串，也可以传 {"reply": ..., "agent": ...}
+    # resume 可以传字符串，也可以传 {"reply": ..., "agent": ...}。
+    # 这里只取 reply：署名（agent）由上层接口负责，节点不再拿它组装任何给 LLM 的话。
     if isinstance(payload, str):
-        reply, agent_name = payload, "人工客服"
+        reply = payload
     else:
         reply = str((payload or {}).get("reply", ""))
-        agent_name = str((payload or {}).get("agent") or "人工客服")
 
     logger.info("收到人工回复，恢复会话 %s", state.get("session_id"))
 
-    # 注入成 SystemMessage 而不是 HumanMessage：
-    # 对 LLM 而言这是"同事交办的信息"，不是用户说的话，语义必须区分开
-    context_message = SystemMessage(
-        content=f"人工客服 {agent_name} 已经回复用户：{reply}\n"
-        f"请基于这条回复做收尾，不要重复人工已经说过的话。"
-    )
-
+    # resume 之后去 feedback → END，**不再经过 responder**。
+    #
+    # 这里原来把人工那句话包成 SystemMessage 注入给 LLM「做收尾」，提示词还写着
+    # 「不要重复人工已经说过的话」。但人工说完了就是说完了，模型没有信息可生成，
+    # 唯一的产出就是复读——实测人工说「稍等，我查询下」，AI 收尾把这句原样抄了一遍，
+    # 还补了句「如还有其他问题，随时找我」。省掉这一步，"AI 复读人工的话"这一整类
+    # 问题从结构上消失，而不是靠提示词祈祷。
+    #
+    # 收尾文案改由 /close 接口确定性拼装，也不再往 state 里塞 SystemMessage。
     return {
         "awaiting_human": False,
         "escalated": False,
         "human_reply": reply,
-        "messages": [context_message],
+        "final_text": "",
     }

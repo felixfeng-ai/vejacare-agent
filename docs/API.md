@@ -109,12 +109,18 @@ data: {"type":"done","message_id":"m_01H...","intent":"logistics","escalated":fa
 
 ```json
 { "success": true, "data": { "session_id": "…", "status": "active",
+  "awaiting_human": false, "escalation_id": null,
   "messages": [ { "id":"m_1","role":"user","content":"…","intent":null,"created_at":"…","meta":{} } ] },
   "error": null }
 ```
 
 `role` ∈ `user` / `assistant` / `system` / `human_agent`（人工客服回复，前端用不同样式）。
 `status` ∈ `active` / `escalated` / `closed`。
+
+`awaiting_human`：这个会话**还有未结单的工单**，前端据此继续轮询并锁住输入。
+判据是「有没有未结单的工单」，不是「人工说过话没有」——人工回了一句仍算在等人工，
+要等他点「结束会话」（见 2.4）。早期版本按后者判断，人工一发话轮询就停了，
+他后面再说什么用户都看不到。`escalation_id` 是那张未结单工单的 id，没有则为 `null`。
 
 ### 1.3 `GET /api/sessions` — 会话列表（左侧历史栏）
 
@@ -126,29 +132,59 @@ data: {"type":"done","message_id":"m_01H...","intent":"logistics","escalated":fa
 
 ## 2. 转人工（Human-in-the-loop）
 
+> **回复与结单是两件事。** 人工说一句话（`/reply`）不等于办完了；工单要显式结单
+> （`/close`）才会关掉、用户端才会解锁。这两件事曾经被绑成一个动作，结果是人工
+> 回一句「稍等，我查询下」就把工单关掉了，用户再也接不上话。
+
 ### 2.1 `GET /api/escalations?status=pending` — 人工工单队列
 
 `data.escalations[]`：
 ```json
 { "id":"esc_1","session_id":"…","reason":"user_requested","reason_label":"用户主动要求人工",
-  "status":"pending","created_at":"…","summary":"用户询问订单 SO2026… 的退款进度，AI 连续两轮未解决" }
+  "status":"pending","created_at":"…","unread_count":2,
+  "summary":"用户询问订单 SO2026… 的退款进度，AI 连续两轮未解决" }
 ```
+
+`unread_count`：工单建好**之后**用户又说了几句。等待人工期间 AI 不答话，但用户补的
+订单号、地址都照常落库并算进这个数——没有它，客服不主动刷新就以为对方在干等。
+已结单的工单恒为 `0`。
 
 ### 2.2 `GET /api/escalations/{escalation_id}` — 工单详情（含完整上下文）
 
 `data` 额外带 `context`：`{ "messages":[...], "intent":"…", "slots":{...}, "tool_results":[...], "kb_docs":[...] }`
 
-### 2.3 `POST /api/escalations/{escalation_id}/reply` — 人工回复并让 Agent 继续
+### 2.3 `POST /api/escalations/{escalation_id}/reply` — 人工回复
 
-请求体：`{ "reply": "已为您加急，预计 24 小时内更新物流", "agent": "客服小美" }`
+请求体：`{ "reply": "稍等，我查询下", "agent": "客服小美" }`
 
-后端把人工回复写入会话（`role = "human_agent"`），并 `resume` 挂起的 LangGraph 图，Agent 接手做收尾（例如致歉+后续承诺）。
+后端把回复写入会话（`role = "human_agent"`）。用户可以继续补充，客服也可以连说几句。
 
-响应：`{ "success": true, "data": { "escalation_id":"…","status":"resolved","session_id":"…" }, "error": null }`
+**不结单**：响应里 `status` 仍是 `pending`，会话仍是 `escalated`，AI 仍不插话。
+`closing_message` 不返回。
 
-### 2.4 `POST /api/escalations/{escalation_id}/resolve` — 仅标记完成（不回复）
+响应：`{ "success": true, "data": { "escalation_id":"…","status":"pending","session_id":"…" }, "error": null }`
 
-请求体：`{}`。响应同上。
+### 2.4 `POST /api/escalations/{escalation_id}/close` — 结束会话（结单）
+
+请求体：`{}`。
+
+结单 → 会话状态回 `active`（前端据此停止轮询、解锁输入）→ 唤醒挂起在
+`interrupt()` 的图 → 给用户补一句收尾。
+
+`closing_message` 由后端**按模板拼**，不走 LLM。人工说完就说完了，模型没有信息可
+生成，唯一的产出是复读——实测人工说「稍等，我查询下」，AI 收尾把这句原样抄了一遍。
+人工一句话都没说就结单时为空串，不产生任何消息。
+
+响应：
+```json
+{ "success": true, "data": { "escalation_id":"…","status":"resolved","session_id":"…",
+  "agent":"客服小美","closing_message":"人工客服（客服小美）已处理完毕。还有其他问题随时找我。",
+  "request_feedback": true }, "error": null }
+```
+
+### 2.5 `POST /api/escalations/{escalation_id}/resolve` — 同上，保留兼容
+
+与 `/close` 同一段实现，仅为兼容保留。前端已统一走 `/close`。
 
 ---
 
@@ -243,7 +279,8 @@ data: {"type":"done","message_id":"m_01H...","intent":"logistics","escalated":fa
 | `GET /api/escalations`（2.1） | 客服 |
 | `GET /api/escalations/{id}`（2.2） | 客服 |
 | `POST /api/escalations/{id}/reply`（2.3） | 客服 |
-| `POST /api/escalations/{id}/resolve`（2.4） | 客服 |
+| `POST /api/escalations/{id}/close`（2.4） | 客服 |
+| `POST /api/escalations/{id}/resolve`（2.5） | 客服 |
 | `GET /api/metrics/satisfaction`（3.2） | **管理员** |
 | `GET /api/console/me`（6.2） | 客服 |
 

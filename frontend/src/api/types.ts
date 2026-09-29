@@ -131,6 +131,15 @@ export interface Message {
 export interface SessionMessages {
   session_id: string;
   status: SessionStatus;
+  /**
+   * 这个会话还有未结单的工单：前端据此继续轮询并锁住输入。
+   *
+   * 判据是「有没有未结单的工单」，**不是**「人工说过话没有」——人工回了一句仍在等人工，
+   * 要等他结束会话。按后者判断的话，人工一开口轮询就停了，他后面再说什么用户都看不到。
+   */
+  awaiting_human: boolean;
+  /** 未结单工单的 id，没有则为 null */
+  escalation_id: string | null;
   messages: Message[];
 }
 
@@ -324,6 +333,13 @@ export interface EscalationSummary {
   agent_name: string | null;
   created_at: string;
   resolved_at: string | null;
+  /**
+   * 工单建好之后用户又说了几句（只对未结单的工单计数，已结单恒为 0）。
+   *
+   * 用户在等待人工期间补的订单号、地址就在这些消息里，而工单详情是点开那一刻的
+   * 快照、不会自己更新——没有这个数，客服不主动刷新就不知道用户又开口了。
+   */
+  unread_count: number;
 }
 
 /**
@@ -352,10 +368,22 @@ export interface EscalationReplyInput {
 export interface EscalationReplyResult {
   escalation_id: string;
   session_id?: string;
+  /**
+   * `/reply` 之后仍是 `pending`（人工还能接着说），只有 `/close`、`/resolve`
+   * 才变成 `resolved`。界面据此决定按钮是「结束会话」还是「已结束」。
+   */
   status: EscalationStatus;
   agent?: string;
-  /** 人工回复后 AI 自动补的收尾话术，客服可据此确认对话已接上 */
+  /**
+   * 结单时给用户的收尾话术，只有 `/close`、`/resolve` 会返回。
+   *
+   * **不是 AI 生成的**，是后端按模板拼的确定性文案。曾经这里是让模型收尾，
+   * 结果人工说「稍等，我查询下」，AI 把这句原样复读了一遍——人工说完就是说完了，
+   * 模型没有信息可生成，唯一的产出就是复读。人工一句话都没说时为空串。
+   */
   closing_message?: string;
+  /** 结单后邀请用户评分。转人工的会话也必须邀请，否则满意度看板会漏掉这一整类 */
+  request_feedback?: boolean;
 }
 
 /* ------------------------------------------------------------------ *

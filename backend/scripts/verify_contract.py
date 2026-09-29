@@ -198,6 +198,7 @@ GUARDED = [
     ("GET", "/api/escalations"),
     ("GET", "/api/escalations/verify-does-not-exist"),
     ("POST", "/api/escalations/verify-does-not-exist/reply"),
+    ("POST", "/api/escalations/verify-does-not-exist/close"),
     ("POST", "/api/escalations/verify-does-not-exist/resolve"),
     ("GET", "/api/metrics/satisfaction"),
 ]
@@ -354,14 +355,62 @@ def main() -> int:
                 typed("GET escalation", data.get("id"), str, "id")
                 typed("GET escalation", data.get("status"), str, "status")
                 typed("GET escalation", data.get("reason_label"), str, "reason_label")
+                typed("GET escalation", data.get("unread_count"), int, "unread_count")
+
+            # 等待人工期间用户补的话不能丢：AI 不答话，但这句话要落库，
+            # 并且算进工单的未读数——客服就靠它知道用户又开口了。
+            ev3 = stream_chat(esid, "订单号 SO20260928001")
+            awaiting = [e for e in ev3 if e.get("type") == "error"]
+            check("等待人工时用户发言被受理",
+                  any(e.get("code") == "AWAITING_HUMAN" for e in awaiting),
+                  f"没有收到 AWAITING_HUMAN：{awaiting}")
+
+            status, body = request("GET", "/api/escalations?status=pending", token=agent_token)
+            rows = (body.get("data") or {}).get("escalations") or []
+            row = next((r for r in rows if r.get("id") == eid), None)
+            check("等待期间用户的发言计入 unread_count",
+                  row is not None and row.get("unread_count") == 1,
+                  f"工单行={row}")
+
             status, body = request("POST", f"/api/escalations/{eid}/reply",
                                    {"reply": "已为您加急处理", "agent": "人工客服"},
                                    token=agent_token)
             check("POST /api/escalations/{id}/reply", status == 200, f"HTTP {status}：{body}")
-            check_envelope("POST /api/escalations/{id}/reply", body)
-            status, body = request("POST", f"/api/escalations/{eid}/resolve", {}, token=agent_token)
-            check("POST /api/escalations/{id}/resolve", status == 200, f"HTTP {status}")
-            check_envelope("POST /api/escalations/{id}/resolve", body)
+            data = check_envelope("POST /api/escalations/{id}/reply", body)
+            # 回复 ≠ 结单。人工可以接着说，用户端仍在等人工。
+            check("回复之后工单仍是待处理",
+                  isinstance(data, dict) and data.get("status") == "pending",
+                  f"status={data.get('status') if isinstance(data, dict) else data}")
+
+            status, body = request("POST", f"/api/escalations/{eid}/close", {}, token=agent_token)
+            check("POST /api/escalations/{id}/close", status == 200, f"HTTP {status}")
+            data = check_envelope("POST /api/escalations/{id}/close", body)
+            if isinstance(data, dict):
+                check("结单后工单状态为 resolved",
+                      data.get("status") == "resolved", f"status={data.get('status')}")
+                typed("POST close", data.get("closing_message"), str, "closing_message")
+                # 收尾文案是模板拼的，不能是人工回复的复读
+                check("收尾文案不是复读人工回复",
+                      "已为您加急处理" not in str(data.get("closing_message")),
+                      f"closing_message={data.get('closing_message')!r}")
+
+            # 结单后接着聊：追问必须接上主题，不能继承上一轮的转人工诉求。
+            #
+            # 这一条是为一次线上事故加的：用户问完退换货政策，追了一句「再详细点」，
+            # 因为上文里有「真人客服」，这一句被判成 human_agent，AI 当场闭嘴转人工。
+            # 断言放在这里而不是只放单测，是因为它只有真模型才会错——单测跑的是桩，
+            # 桩改了不代表线上那个模型也改了。这条跑在线上才算数。
+            stream_chat(esid, "当前平台的退换货政策是什么，什么商品允许退换货")
+            ev4 = stream_chat(esid, "再详细点")
+            intents4 = [e.get("intent") for e in ev4 if e.get("type") == "intent"]
+            check("追问不继承上一轮的转人工诉求",
+                  bool(intents4) and intents4[0] != "human_agent",
+                  f"追问意图={intents4}")
+            check("追问没有被转人工",
+                  not any(e.get("type") == "escalated" for e in ev4),
+                  "追问又触发了转人工")
+            answer4 = "".join(e.get("text", "") for e in ev4 if e.get("type") == "token")
+            check("追问得到了回答（没退化成闲聊）", bool(answer4.strip()), "追问没有任何回答")
 
         # 7. 提交满意度（造出 avg_rating 非空的分支）
         status, body = request("POST", "/api/feedback", {

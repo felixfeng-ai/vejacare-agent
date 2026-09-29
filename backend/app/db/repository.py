@@ -177,15 +177,53 @@ async def list_escalations(db: AsyncSession, status: str | None = None) -> list[
     return list(result)
 
 
-async def resolve_escalation(
-    db: AsyncSession, escalation: Escalation, *, human_reply: str = "", agent_name: str = ""
+async def record_human_reply(
+    db: AsyncSession, escalation: Escalation, *, reply: str, agent_name: str
 ) -> Escalation:
-    escalation.status = "resolved"
-    escalation.human_reply = human_reply
+    """记一条人工回复，**不改工单状态**。
+
+    回复是「我说了一句话」，结单是「这事办完了」。这两件事被绑成一个动作时，
+    人工说一句「稍等，我查询下」就等于宣告处理完毕，工单当场关掉——实测就是这么发生的。
+    拆开之后人工可以连说几句，直到他自己点「结束会话」。
+
+    `human_reply` 保留最后一条：工单列表拿它当摘要，客服回头翻也看这一句。
+    """
+    escalation.human_reply = reply
     escalation.agent_name = agent_name
+    await db.flush()
+    return escalation
+
+
+async def resolve_escalation(db: AsyncSession, escalation: Escalation) -> Escalation:
+    """结单。
+
+    **刻意不再接收人工回复**：回复由 `record_human_reply` 单独负责。留一个带默认值的
+    `human_reply=""` 参数在这里，结单那一步就会把已经落好的回复覆盖成空串
+    ——「先回复、后结单」正好是现在的正常路径，这个坑一定会踩到。
+    """
+    escalation.status = "resolved"
     escalation.resolved_at = datetime.now(timezone.utc)
     await db.flush()
     return escalation
+
+
+async def count_user_messages_since(
+    db: AsyncSession, session_id: str, since: datetime
+) -> int:
+    """工单建好之后，用户又说了几句。
+
+    这就是客服端需要的「有新消息」。用户在等待人工期间补的订单号、地址、补充诉求
+    全在这些消息里，而工单详情是点开那一刻的快照，不会自己更新——没有这个计数，
+    客服不主动刷新就永远不知道用户又开口了。
+    """
+    total = await db.scalar(
+        select(func.count(Message.id)).where(
+            Message.session_id == session_id,
+            Message.role == "user",
+            Message.created_at > since,
+        )
+    )
+    return int(total or 0)
 
 
 # ---------------------------------------------------------------- 满意度
