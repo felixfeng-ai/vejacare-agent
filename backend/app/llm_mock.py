@@ -115,13 +115,27 @@ def classify_intent(question: str, history: list[str] | None = None) -> dict:
 
     打平时仍然由表序决定，但表序现在是有依据的（具体意图在前，宽泛的 logistics 垫底）。
     """
-    # 只有在最新一句话里找不到线索时，才回看上一轮用户消息（指代消解，如"那它到哪了"）
-    haystacks = [question] + list(history or [])[:1]
+    # 只有在最新一句话里找不到线索时，才回看上一轮用户消息（指代消解，如"那它到哪了"）。
+    #
+    # 取 `[-1:]` 而不是 `[:1]`：history 是按时间正序传进来的，"上一轮"是**最后**一条。
+    # 原来取的是 `[:1]`，即窗口里**最旧**的那一条，于是"再详细点"这种追问回看的是
+    # 三轮之前那句，而不是刚聊完的那一轮——主题接不上，追问被当成闲聊或转人工处理。
+    haystacks = [question] + list(history or [])[-1:]
 
     best_intent, best_score = "chitchat", 0
     own_score = 0
     for index, text in enumerate(haystacks):
         intent, score = _intent_score(text)
+
+        # 回看上文时**不继承转人工诉求**：上一轮要过人工，这一轮问的是业务问题，
+        # 就按业务问题分类。
+        #
+        # 这条守的是线上实测过的一个坑：用户问完退换货政策，追了一句"再详细点"，
+        # 因为上一轮里有"真人客服"，这一句被判成 human_agent，AI 当场闭嘴转人工。
+        # 追问只该继承**主题**，不该继承**诉求**——诉求是那一轮的事，说完了就完了。
+        if index > 0 and intent == "human_agent":
+            continue
+
         if index == 0:
             own_score = score
         if score > best_score:
