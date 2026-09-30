@@ -563,7 +563,7 @@ push main → GitHub Actions → SSH → /opt/veyacare/deploy/cicd-deploy.sh
 - 满意度闭环（`POST /api/feedback` → 看板可见）与转人工、会话管理三条接口链路均有接口级测试
 - 100 条评测集 + 可回归的评测脚本，检索 Hit@5 100% / 要点覆盖 98%
 - Dockerfile（后端 + 前端多阶段）、docker-compose、GitHub Actions（测试 + 评测门禁 + 镜像冒烟）
-- 后端 127/127 测试通过（含 36 条鉴权用例）；前端 reducer 契约 36 条断言通过；接口契约校验全项通过（含 7 条受保护接口的未授权/越权检查，项数随库中会话数浮动）
+- 后端 127/127 测试通过（含 43 条鉴权用例，`backend/tests/test_console_auth.py`）；前端 reducer 契约 36 条断言通过；接口契约校验全项通过（含 7 条受保护接口的未授权/越权检查，项数随库中会话数浮动）
 - **已部署上线**：香港服务器原生部署（PM2 + nginx），push 到 main 自动发布，见「部署」一节
 
 **未完成**
